@@ -70,3 +70,19 @@ def test_add_timeline_event_raises_for_duplicate_id(tmp_path: Path) -> None:
             {"id": "evt-1", "chapter_no": 2, "event": "A conflicting record."},
             str(file_path),
         )
+
+
+def test_timeline_service_supports_project_root_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "novel-project"
+
+    add_timeline_event(
+        {"id": "evt-1", "chapter_no": 1, "event": "Opening escape."},
+        str(project_root),
+    )
+
+    assert load_timeline(str(project_root)) == [
+        {"id": "evt-1", "chapter_no": 1, "event": "Opening escape."}
+    ]
+    assert get_events_by_chapter(1, str(project_root)) == [
+        {"id": "evt-1", "chapter_no": 1, "event": "Opening escape."}
+    ]

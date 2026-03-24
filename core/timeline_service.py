@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from core.errors import is_missing_required_value
@@ -8,6 +9,7 @@ from core.storage import load_json, save_json
 
 TimelineEvent = dict[str, Any]
 REQUIRED_FIELDS: tuple[str, ...] = ("id", "chapter_no", "event")
+DEFAULT_PATH = "data/timeline.json"
 
 
 class TimelineServiceError(RuntimeError):
@@ -22,36 +24,37 @@ class TimelineConflictError(TimelineServiceError):
     """Raised when a timeline event conflicts with existing data."""
 
 
-def load_timeline(path: str = "data/timeline.json") -> list[TimelineEvent]:
+def load_timeline(path: str = DEFAULT_PATH) -> list[TimelineEvent]:
     """Load timeline events from a UTF-8 encoded JSON file."""
+    resolved_path = _resolve_timeline_path(path)
     try:
-        data = load_json(path)
+        data = load_json(resolved_path)
     except FileNotFoundError:
         return []
 
     if not isinstance(data, list):
         raise TimelineValidationError(
-            f"Timeline data file must contain a JSON array: {path}"
+            f"Timeline data file must contain a JSON array: {resolved_path}"
         )
 
     if not all(isinstance(item, dict) for item in data):
         raise TimelineValidationError(
-            f"Each timeline event must be a JSON object: {path}"
+            f"Each timeline event must be a JSON object: {resolved_path}"
         )
 
     return data
 
 
 def save_timeline(
-    events: list[TimelineEvent], path: str = "data/timeline.json"
+    events: list[TimelineEvent], path: str = DEFAULT_PATH
 ) -> None:
     """Validate and save timeline events to a UTF-8 encoded JSON file."""
     _validate_timeline_events(events)
-    save_json(path, events)
+    save_json(_resolve_timeline_path(path), events)
 
 
 def add_timeline_event(
-    event: TimelineEvent, path: str = "data/timeline.json"
+    event: TimelineEvent, path: str = DEFAULT_PATH
 ) -> None:
     """Add a validated timeline event, rejecting duplicate ids."""
     _validate_event(event)
@@ -68,7 +71,7 @@ def add_timeline_event(
 
 
 def get_events_by_chapter(
-    chapter_no: int, path: str = "data/timeline.json"
+    chapter_no: int, path: str = DEFAULT_PATH
 ) -> list[TimelineEvent]:
     """Return timeline events whose chapter number matches exactly."""
     return [
@@ -76,6 +79,13 @@ def get_events_by_chapter(
         for event in load_timeline(path)
         if event.get("chapter_no") == chapter_no
     ]
+
+
+def _resolve_timeline_path(path: str) -> str:
+    candidate = Path(path)
+    if candidate.suffix.lower() == ".json":
+        return str(candidate)
+    return str(candidate / "timeline.json")
 
 
 def _validate_timeline_events(events: list[TimelineEvent]) -> None:

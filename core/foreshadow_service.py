@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from core.errors import is_missing_required_value
@@ -15,6 +16,7 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "status",
 )
 DEFAULT_STATUS = "open"
+DEFAULT_PATH = "data/foreshadowing.json"
 
 
 class ForeshadowServiceError(RuntimeError):
@@ -29,35 +31,36 @@ class ForeshadowNotFoundError(ForeshadowServiceError):
     """Raised when a foreshadow item cannot be found."""
 
 
-def load_foreshadows(path: str = "data/foreshadowing.json") -> list[ForeshadowItem]:
+def load_foreshadows(path: str = DEFAULT_PATH) -> list[ForeshadowItem]:
     """Load foreshadow items from a UTF-8 encoded JSON file."""
+    resolved_path = _resolve_foreshadow_path(path)
     try:
-        data = load_json(path)
+        data = load_json(resolved_path)
     except FileNotFoundError:
         return []
 
     if not isinstance(data, list):
         raise ForeshadowValidationError(
-            f"Foreshadow data file must contain a JSON array: {path}"
+            f"Foreshadow data file must contain a JSON array: {resolved_path}"
         )
 
     if not all(isinstance(item, dict) for item in data):
         raise ForeshadowValidationError(
-            f"Each foreshadow entry must be a JSON object: {path}"
+            f"Each foreshadow entry must be a JSON object: {resolved_path}"
         )
 
     return data
 
 
 def save_foreshadows(
-    items: list[ForeshadowItem], path: str = "data/foreshadowing.json"
+    items: list[ForeshadowItem], path: str = DEFAULT_PATH
 ) -> None:
     """Save foreshadow items to a UTF-8 encoded JSON file."""
-    save_json(path, items)
+    save_json(_resolve_foreshadow_path(path), items)
 
 
 def add_foreshadow(
-    item: ForeshadowItem, path: str = "data/foreshadowing.json"
+    item: ForeshadowItem, path: str = DEFAULT_PATH
 ) -> None:
     """Validate and append a foreshadow item."""
     normalized_item = _normalize_item(item)
@@ -67,7 +70,7 @@ def add_foreshadow(
 
 
 def mark_foreshadow_resolved(
-    item_id: str, path: str = "data/foreshadowing.json"
+    item_id: str, path: str = DEFAULT_PATH
 ) -> None:
     """Mark the foreshadow item with the given id as resolved."""
     items = load_foreshadows(path)
@@ -78,6 +81,13 @@ def mark_foreshadow_resolved(
             return
 
     raise ForeshadowNotFoundError(f"Foreshadow item not found for id: {item_id}")
+
+
+def _resolve_foreshadow_path(path: str) -> str:
+    candidate = Path(path)
+    if candidate.suffix.lower() == ".json":
+        return str(candidate)
+    return str(candidate / "foreshadow.json")
 
 
 def _normalize_item(item: ForeshadowItem) -> ForeshadowItem:

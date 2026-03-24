@@ -81,3 +81,27 @@ def test_mark_foreshadow_resolved_raises_for_missing_id(tmp_path: Path) -> None:
         match="Foreshadow item not found for id: fs-404",
     ):
         mark_foreshadow_resolved("fs-404", str(file_path))
+
+
+def test_foreshadow_service_supports_project_root_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "novel-project"
+
+    add_foreshadow(
+        {
+            "id": "fs-001",
+            "content": "The ring reacts to blood.",
+            "introduced_in": "chapter_2",
+            "payoff_planned": "chapter_8",
+        },
+        str(project_root),
+    )
+
+    assert load_foreshadows(str(project_root)) == [
+        {
+            "id": "fs-001",
+            "content": "The ring reacts to blood.",
+            "introduced_in": "chapter_2",
+            "payoff_planned": "chapter_8",
+            "status": "open",
+        }
+    ]

@@ -60,3 +60,21 @@ def test_add_character_raises_for_duplicate_name(tmp_path: Path) -> None:
         match="Character with name 'Lin Yue' already exists",
     ):
         add_character({"name": "Lin Yue", "role": "rival"}, str(file_path))
+
+
+def test_character_service_supports_project_root_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "novel-project"
+
+    add_character(
+        {"name": "Su He", "role": "mentor", "traits": ["calm"]},
+        str(project_root),
+    )
+
+    assert load_characters(str(project_root)) == [
+        {"name": "Su He", "role": "mentor", "traits": ["calm"]}
+    ]
+    assert get_character_by_name("Su He", str(project_root)) == {
+        "name": "Su He",
+        "role": "mentor",
+        "traits": ["calm"],
+    }

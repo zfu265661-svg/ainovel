@@ -1,0 +1,21 @@
+请基于以下章节结果，生成“状态更新建议”。
+
+要求：
+1. 返回 JSON 对象。
+2. 顶层至少包含：
+   - chapter_no
+   - character_updates
+   - timeline_updates
+   - foreshadow_updates
+   - notes
+3. 这些内容是建议，不是最终写回结果。
+
+输入信息：
+- 章节号：{chapter_no}
+- 总纲：{outline}
+- 章节规划：{chapter_plan}
+- 改写稿：{rewritten_text}
+- 章节摘要：{chapter_summary}
+- 人物状态：{characters}
+- 时间线：{timeline}
+- 伏笔状态：{foreshadow}

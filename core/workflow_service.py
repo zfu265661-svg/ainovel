@@ -1,14 +1,34 @@
 from __future__ import annotations
 
+import json
 from importlib import import_module
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Protocol, TypeVar, cast
 
+from core.character_service import load_characters
 from core.chapter_service import generate_chapter_plan
+from core.chapter_service import generate_volume_chapters
 from core.draft_service import generate_draft
 from core.errors import NovelAgentError
+from core.foreshadow_service import load_foreshadows
 from core.outline_service import generate_outline
+from core.project_service import (
+    get_chapter_draft_path,
+    create_project_structure,
+    get_chapter_plan_path,
+    get_chapter_rewrite_path,
+    get_chapter_summary_path,
+    get_chapter_suggestion_path,
+    get_project_file_paths,
+    load_project,
+)
+from core.rewrite_service import rewrite_text
+from core.storage import load_json, load_text, save_json, save_text
+from core.suggestion_service import generate_state_suggestions
+from core.summarizer import summarize_previous_chapter
 from core.timeline_service import load_timeline
+from core.volume_service import generate_volume_plan
 
 
 class WorkflowServiceError(NovelAgentError, RuntimeError):
@@ -37,6 +57,197 @@ class _StorageModule(Protocol):
 
 
 T = TypeVar("T")
+MAX_DRAFT_TIMELINE_EVENTS = 5
+
+
+def create_project(
+    project_root: str,
+    title: str,
+    topic: str,
+    style: str,
+    target: str,
+) -> dict[str, Any]:
+    """Create the minimum Phase 1 project shell."""
+    return create_project_structure(
+        project_root=project_root,
+        title=title,
+        topic=topic,
+        style=style,
+        target=target,
+    )
+
+
+def plan_novel(project_root: str) -> dict[str, Any]:
+    """Generate and persist outline, volume plan, and chapter plans for a project."""
+    project = _run_stage("project load", lambda: load_project(project_root))
+    outline = _generate_outline_stage(
+        topic=str(project["topic"]),
+        style=str(project["style"]),
+        target=str(project["target"]),
+    )
+    volume_plan = _run_stage(
+        "volume plan generation",
+        lambda: generate_volume_plan(outline),
+    )
+    chapter_plans = _generate_volume_chapter_plans(outline, volume_plan)
+    chapter_index = [_to_chapter_index_entry(chapter_plan) for chapter_plan in chapter_plans]
+
+    _persist_phase1_plan(
+        project_root=project_root,
+        outline=outline,
+        volume_plan=volume_plan,
+        chapter_plans=chapter_plans,
+        chapter_index=chapter_index,
+    )
+
+    return {
+        "project": project,
+        "outline": outline,
+        "volume_plan": volume_plan,
+        "chapters": chapter_index,
+    }
+
+
+def write_chapter(project_root: str, chapter_no: int) -> dict[str, Any]:
+    """Generate and persist all Phase 1 chapter outputs for one planned chapter."""
+    project = _run_stage("project load", lambda: load_project(project_root))
+    paths = get_project_file_paths(project_root)
+    outline = _run_stage("outline load", lambda: _load_outline_from_project(paths))
+    chapters_index = _run_stage("chapter index load", lambda: _load_chapter_index(paths))
+    chapter_entry = _run_stage(
+        "chapter lookup",
+        lambda: _find_chapter_entry(chapters_index, chapter_no),
+    )
+    chapter_plan = _run_stage(
+        "chapter plan load",
+        lambda: _load_chapter_plan_from_project(project_root, chapter_no),
+    )
+    previous_summary = _load_previous_summary(project_root, chapter_no)
+    characters = _run_stage("character state load", lambda: _load_character_state(paths))
+    timeline = _run_stage("timeline state load", lambda: _load_timeline_state(paths))
+    foreshadow = _run_stage("foreshadow state load", lambda: _load_foreshadow_state(paths))
+
+    context_bundle = _build_draft_context(
+        chapter_no=chapter_no,
+        outline=outline,
+        previous_summary=previous_summary,
+        characters=characters,
+        timeline=timeline,
+        foreshadow=foreshadow,
+    )
+    draft_text = _run_stage(
+        "draft generation",
+        lambda: generate_draft(
+            chapter_plan=chapter_plan,
+            context_bundle=context_bundle,
+            style_rules=str(project["style"]),
+        ),
+    )
+    rewritten_text = _run_stage("draft rewrite", lambda: rewrite_text(draft_text))
+    chapter_summary = _run_stage(
+        "chapter summarization",
+        lambda: summarize_previous_chapter(rewritten_text),
+    )
+    suggestion = _run_stage(
+        "state suggestion generation",
+        lambda: generate_state_suggestions(
+            chapter_no=chapter_no,
+            outline=outline,
+            chapter_plan=chapter_plan,
+            rewritten_text=rewritten_text,
+            chapter_summary=chapter_summary,
+            characters=characters,
+            timeline=timeline,
+            foreshadow=foreshadow,
+        ),
+    )
+
+    draft_path = get_chapter_draft_path(project_root, chapter_no)
+    rewrite_path = get_chapter_rewrite_path(project_root, chapter_no)
+    summary_path = get_chapter_summary_path(project_root, chapter_no)
+    suggestion_path = get_chapter_suggestion_path(project_root, chapter_no)
+
+    _run_stage("draft persistence", lambda: save_text(draft_path, draft_text))
+    _run_stage("rewrite persistence", lambda: save_text(rewrite_path, rewritten_text))
+    _run_stage("summary persistence", lambda: save_text(summary_path, chapter_summary))
+    _run_stage("suggestion persistence", lambda: save_json(suggestion_path, suggestion))
+
+    return {
+        "chapter_no": cast(int, chapter_entry["chapter_no"]),
+        "draft_path": draft_path,
+        "rewrite_path": rewrite_path,
+        "summary_path": summary_path,
+        "suggestion_path": suggestion_path,
+    }
+
+
+def commit_suggestion(project_root: str, chapter_no: int) -> dict[str, Any]:
+    """Commit one chapter suggestion file into the formal state JSON files."""
+    paths = get_project_file_paths(project_root)
+    suggestion_path = get_chapter_suggestion_path(project_root, chapter_no)
+
+    suggestion = _run_stage(
+        "suggestion load",
+        lambda: _load_suggestion_for_commit(suggestion_path, chapter_no),
+    )
+    characters_state = _run_stage(
+        "character state load",
+        lambda: _load_state_container(paths["characters_json"], "characters"),
+    )
+    timeline_state = _run_stage(
+        "timeline state load",
+        lambda: _load_state_container(paths["timeline_json"], "events"),
+    )
+    foreshadow_state = _run_stage(
+        "foreshadow state load",
+        lambda: _load_state_container(paths["foreshadow_json"], "items"),
+    )
+
+    updated_characters = _apply_character_updates(
+        characters_state,
+        cast(list[dict[str, Any]], suggestion["character_updates"]),
+    )
+    updated_timeline = _apply_timeline_updates(
+        timeline_state,
+        cast(list[dict[str, Any]], suggestion["timeline_updates"]),
+        chapter_no,
+    )
+    updated_foreshadow = _apply_foreshadow_updates(
+        foreshadow_state,
+        cast(list[dict[str, Any]], suggestion["foreshadow_updates"]),
+        chapter_no,
+    )
+
+    _run_stage(
+        "character state persistence",
+        lambda: save_json(paths["characters_json"], {"characters": updated_characters}),
+    )
+    _run_stage(
+        "timeline state persistence",
+        lambda: save_json(paths["timeline_json"], {"events": updated_timeline}),
+    )
+    _run_stage(
+        "foreshadow state persistence",
+        lambda: save_json(paths["foreshadow_json"], {"items": updated_foreshadow}),
+    )
+
+    committed_suggestion = {
+        **suggestion,
+        "committed": True,
+        "committed_chapter_no": chapter_no,
+    }
+    _run_stage(
+        "suggestion commit marker persistence",
+        lambda: save_json(suggestion_path, committed_suggestion),
+    )
+
+    return {
+        "chapter_no": chapter_no,
+        "suggestion_path": suggestion_path,
+        "characters_updated": len(cast(list[Any], suggestion["character_updates"])),
+        "timeline_updated": len(cast(list[Any], suggestion["timeline_updates"])),
+        "foreshadow_updated": len(cast(list[Any], suggestion["foreshadow_updates"])),
+    }
 
 
 def run_basic_workflow(
@@ -113,6 +324,28 @@ def _generate_outline_stage(topic: str, style: str, target: str) -> dict[str, An
         "outline generation",
         lambda: generate_outline(topic=topic, style=style, target=target),
     )
+
+
+def _generate_volume_chapter_plans(
+    outline: dict[str, Any],
+    volume_plan: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    chapter_plans: list[dict[str, Any]] = []
+    next_chapter_no = 1
+
+    for volume_info in volume_plan:
+        volume_chapters = _run_stage(
+            "volume chapter planning",
+            lambda volume_info=volume_info, next_chapter_no=next_chapter_no: generate_volume_chapters(
+                outline=outline,
+                volume_info=volume_info,
+                start_chapter_no=next_chapter_no,
+            ),
+        )
+        chapter_plans.extend(volume_chapters)
+        next_chapter_no += len(volume_chapters)
+
+    return chapter_plans
 
 
 def _generate_chapter_plan_stage(
@@ -253,6 +486,397 @@ def _attach_consistency_check(
         **result,
         "consistency_check": consistency_check,
     }
+
+
+def _persist_phase1_plan(
+    project_root: str,
+    outline: dict[str, Any],
+    volume_plan: list[dict[str, Any]],
+    chapter_plans: list[dict[str, Any]],
+    chapter_index: list[dict[str, Any]],
+) -> None:
+    paths = get_project_file_paths(project_root)
+    docs_dir = Path(paths["docs_dir"])
+
+    _run_stage(
+        "outline persistence",
+        lambda: save_text(
+            str(docs_dir / "outline.md"),
+            _render_outline_markdown(outline),
+        ),
+    )
+    _run_stage(
+        "volume plan persistence",
+        lambda: save_text(
+            str(docs_dir / "volumes.md"),
+            _render_volumes_markdown(volume_plan),
+        ),
+    )
+    _run_stage(
+        "chapter index persistence",
+        lambda: save_json(paths["chapters_json"], {"chapters": chapter_index}),
+    )
+
+    for chapter_plan in chapter_plans:
+        chapter_no = cast(int, chapter_plan["chapter_no"])
+        _run_stage(
+            "chapter plan persistence",
+            lambda chapter_plan=chapter_plan, chapter_no=chapter_no: save_text(
+                get_chapter_plan_path(project_root, chapter_no),
+                _render_chapter_plan_markdown(chapter_plan),
+            ),
+        )
+
+
+def _to_chapter_index_entry(chapter_plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "chapter_no": chapter_plan["chapter_no"],
+        "volume_no": chapter_plan["volume_no"],
+        "title": chapter_plan["title"],
+        "goal": chapter_plan["goal"],
+        "status": chapter_plan["status"],
+    }
+
+
+def _render_outline_markdown(outline: dict[str, Any]) -> str:
+    return "# 总纲\n\n```json\n" + json.dumps(outline, ensure_ascii=False, indent=2) + "\n```\n"
+
+
+def _render_volumes_markdown(volume_plan: list[dict[str, Any]]) -> str:
+    return "# 分卷规划\n\n```json\n" + json.dumps(volume_plan, ensure_ascii=False, indent=2) + "\n```\n"
+
+
+def _render_chapter_plan_markdown(chapter_plan: dict[str, Any]) -> str:
+    return "# 章节规划\n\n```json\n" + json.dumps(chapter_plan, ensure_ascii=False, indent=2) + "\n```\n"
+
+
+def _load_outline_from_project(paths: dict[str, str]) -> dict[str, Any]:
+    return _load_json_markdown_document(str(Path(paths["docs_dir"]) / "outline.md"), "Outline")
+
+
+def _load_chapter_plan_from_project(project_root: str, chapter_no: int) -> dict[str, Any]:
+    return _load_json_markdown_document(
+        get_chapter_plan_path(project_root, chapter_no),
+        "Chapter plan",
+    )
+
+
+def _load_json_markdown_document(path: str, document_name: str) -> dict[str, Any]:
+    content = load_text(path)
+    json_block = _extract_json_code_block(content)
+    try:
+        parsed = json.loads(json_block)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{document_name} document is not valid JSON: {exc.msg}") from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{document_name} document must contain a JSON object.")
+
+    return parsed
+
+
+def _extract_json_code_block(content: str) -> str:
+    marker = "```json"
+    start = content.find(marker)
+    if start == -1:
+        return content.strip()
+
+    start += len(marker)
+    end = content.find("```", start)
+    if end == -1:
+        return content[start:].strip()
+    return content[start:end].strip()
+
+
+def _load_chapter_index(paths: dict[str, str]) -> list[dict[str, Any]]:
+    data = load_json(paths["chapters_json"])
+    if not isinstance(data, dict):
+        raise ValueError("Chapter index file must be a JSON object.")
+
+    chapters = data.get("chapters")
+    if not isinstance(chapters, list) or not all(isinstance(item, dict) for item in chapters):
+        raise ValueError("Chapter index file must contain a 'chapters' array of objects.")
+
+    return chapters
+
+
+def _find_chapter_entry(chapters_index: list[dict[str, Any]], chapter_no: int) -> dict[str, Any]:
+    for entry in chapters_index:
+        if entry.get("chapter_no") == chapter_no:
+            return entry
+    raise ValueError(f"Chapter {chapter_no} was not found in chapters.json.")
+
+
+def _load_previous_summary(project_root: str, chapter_no: int) -> str:
+    if chapter_no <= 1:
+        return ""
+
+    previous_summary_path = get_chapter_summary_path(project_root, chapter_no - 1)
+    if not Path(previous_summary_path).is_file():
+        return ""
+
+    return load_text(previous_summary_path).strip()
+
+
+def _load_character_state(paths: dict[str, str]) -> list[Any]:
+    data = load_json(paths["characters_json"])
+    if isinstance(data, dict):
+        characters = data.get("characters")
+        if isinstance(characters, list):
+            return characters
+    return load_characters(paths["project_root"])
+
+
+def _load_timeline_state(paths: dict[str, str]) -> list[Any]:
+    data = load_json(paths["timeline_json"])
+    if isinstance(data, dict):
+        events = data.get("events")
+        if isinstance(events, list):
+            return events
+    return load_timeline(paths["project_root"])
+
+
+def _load_foreshadow_state(paths: dict[str, str]) -> list[Any]:
+    data = load_json(paths["foreshadow_json"])
+    if isinstance(data, dict):
+        items = data.get("items")
+        if isinstance(items, list):
+            return items
+    return load_foreshadows(paths["project_root"])
+
+
+def _build_draft_context(
+    chapter_no: int,
+    outline: dict[str, Any],
+    previous_summary: str,
+    characters: list[Any],
+    timeline: list[Any],
+    foreshadow: list[Any],
+) -> dict[str, Any]:
+    return {
+        "outline": outline,
+        "previous_summary": previous_summary,
+        "characters": _compact_character_context(characters),
+        "timeline": _select_recent_timeline_events(timeline, chapter_no),
+        "foreshadow": _select_active_foreshadow_items(foreshadow),
+    }
+
+
+def _compact_character_context(characters: list[Any]) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+
+    for item in characters:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+
+        traits = item.get("traits", [])
+        compacted.append(
+            {
+                "name": name,
+                "role": str(item.get("role", "")).strip(),
+                "traits": traits if isinstance(traits, list) else [],
+                "current_state": str(item.get("current_state", "")).strip(),
+            }
+        )
+
+    return compacted
+
+
+def _select_recent_timeline_events(
+    timeline: list[Any],
+    chapter_no: int,
+) -> list[dict[str, Any]]:
+    historical_events = [
+        cast(dict[str, Any], event)
+        for event in timeline
+        if isinstance(event, dict)
+        and isinstance(event.get("chapter_no"), int)
+        and cast(int, event["chapter_no"]) < chapter_no
+    ]
+    return historical_events[-MAX_DRAFT_TIMELINE_EVENTS:]
+
+
+def _select_active_foreshadow_items(foreshadow: list[Any]) -> list[dict[str, Any]]:
+    return [
+        cast(dict[str, Any], item)
+        for item in foreshadow
+        if isinstance(item, dict) and item.get("status") == "open"
+    ]
+
+
+def _load_suggestion_for_commit(path: str, chapter_no: int) -> dict[str, Any]:
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError("Suggestion file must contain a JSON object.")
+
+    _validate_commit_suggestion(data)
+
+    if data.get("chapter_no") != chapter_no:
+        raise ValueError(
+            f"Suggestion chapter_no mismatch: expected {chapter_no}, got {data.get('chapter_no')}."
+        )
+
+    if data.get("committed") is True:
+        raise ValueError(f"Suggestion for chapter {chapter_no} has already been committed.")
+
+    return data
+
+
+def _validate_commit_suggestion(suggestion: dict[str, Any]) -> None:
+    required_fields = (
+        "chapter_no",
+        "character_updates",
+        "timeline_updates",
+        "foreshadow_updates",
+        "notes",
+    )
+    missing_fields = [field for field in required_fields if field not in suggestion]
+    if missing_fields:
+        missing = ", ".join(missing_fields)
+        raise ValueError(f"Suggestion is missing required field(s): {missing}")
+
+    _validate_commit_updates("character_updates", suggestion["character_updates"])
+    _validate_commit_updates("timeline_updates", suggestion["timeline_updates"])
+    _validate_commit_updates("foreshadow_updates", suggestion["foreshadow_updates"])
+
+
+def _validate_commit_updates(field_name: str, updates: Any) -> None:
+    if not isinstance(updates, list):
+        raise ValueError(f"Suggestion field '{field_name}' must be a list.")
+
+    for index, item in enumerate(updates, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Suggestion field '{field_name}' entry {index} must be a JSON object."
+            )
+
+        missing_fields = [
+            field for field in ("action", "target", "content") if field not in item
+        ]
+        if missing_fields:
+            missing = ", ".join(missing_fields)
+            raise ValueError(
+                f"Suggestion field '{field_name}' entry {index} is missing required field(s): {missing}"
+            )
+
+
+def _load_state_container(path: str, key: str) -> list[dict[str, Any]]:
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"State file {path} must contain a JSON object.")
+
+    items = data.get(key)
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ValueError(f"State file {path} must contain a '{key}' array of objects.")
+
+    return cast(list[dict[str, Any]], items)
+
+
+def _apply_character_updates(
+    characters: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = [dict(character) for character in characters]
+
+    for update in updates:
+        target = str(update["target"])
+        content = str(update["content"])
+        character = _find_item_by_key(merged, "name", target)
+
+        if character is None:
+            character = {
+                "name": target,
+                "role": "unknown",
+                "traits": [],
+                "current_state": content,
+            }
+            merged.append(character)
+            continue
+
+        if update.get("action") == "update":
+            existing_state = str(character.get("current_state", "")).strip()
+            character["current_state"] = (
+                f"{existing_state}\n{content}".strip() if existing_state else content
+            )
+        elif update.get("action") == "add" and not character.get("current_state"):
+            character["current_state"] = content
+
+    return merged
+
+
+def _apply_timeline_updates(
+    timeline: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+    chapter_no: int,
+) -> list[dict[str, Any]]:
+    merged = [dict(event) for event in timeline]
+
+    for update in updates:
+        merged.append(
+            {
+                "chapter_no": chapter_no,
+                "event": str(update["content"]),
+                "action": str(update["action"]),
+                "target": str(update["target"]),
+            }
+        )
+
+    return merged
+
+
+def _apply_foreshadow_updates(
+    foreshadow_items: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+    chapter_no: int,
+) -> list[dict[str, Any]]:
+    merged = [dict(item) for item in foreshadow_items]
+
+    for update in updates:
+        target = str(update["target"])
+        content = str(update["content"])
+        item = _find_item_by_key(merged, "id", target)
+
+        if update.get("action") == "add":
+            if item is None:
+                merged.append(
+                    {
+                        "id": target,
+                        "content": content,
+                        "introduced_in": f"chapter_{chapter_no}",
+                        "status": "open",
+                    }
+                )
+            continue
+
+        if item is None:
+            merged.append(
+                {
+                    "id": target,
+                    "content": content,
+                    "introduced_in": f"chapter_{chapter_no}",
+                    "status": content,
+                }
+            )
+            continue
+
+        item["status"] = content
+
+    return merged
+
+
+def _find_item_by_key(
+    items: list[dict[str, Any]],
+    key: str,
+    value: str,
+) -> dict[str, Any] | None:
+    for item in items:
+        if item.get(key) == value:
+            return item
+    return None
 
 
 def _load_optional_module(module_name: str) -> ModuleType | None:
