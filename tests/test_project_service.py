@@ -46,6 +46,9 @@ def test_create_project_structure_creates_minimum_phase1_files(tmp_path: Path) -
     assert load_json(paths["characters_json"]) == {"characters": []}
     assert load_json(paths["timeline_json"]) == {"events": []}
     assert load_json(paths["foreshadow_json"]) == {"items": []}
+    assert not (project_root / "loop_state.json").exists()
+    assert not (project_root / "checkpoints").exists()
+    assert not (project_root / "reviews").exists()
 
 
 def test_load_project_returns_project_metadata(tmp_path: Path) -> None:
