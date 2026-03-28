@@ -112,7 +112,7 @@ def _parse_result_json(response_text: str) -> dict[str, Any]:
 
 
 def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(result)
+    normalized = dict(_extract_required_payload(result))
 
     if "character_updates" in normalized:
         normalized["character_updates"] = _normalize_character_updates(
@@ -128,6 +128,35 @@ def _normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         )
 
     return normalized
+
+
+def _extract_required_payload(result: dict[str, Any]) -> dict[str, Any]:
+    if not collect_missing_fields(result, REQUIRED_FIELDS):
+        return result
+
+    candidates: list[dict[str, Any]] = []
+    for value in result.values():
+        _collect_required_payload_candidates(value, candidates)
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    return result
+
+
+def _collect_required_payload_candidates(value: Any, candidates: list[dict[str, Any]]) -> None:
+    if isinstance(value, dict):
+        if not collect_missing_fields(value, REQUIRED_FIELDS):
+            candidates.append(value)
+            return
+
+        for nested_value in value.values():
+            _collect_required_payload_candidates(nested_value, candidates)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            _collect_required_payload_candidates(item, candidates)
 
 
 def _validate_result(result: dict[str, Any]) -> None:
