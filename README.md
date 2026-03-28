@@ -1,86 +1,39 @@
 # 小说写作 Agent
 
-这是一个基于 Python 的小说写作 Agent 项目，支持总纲生成、章纲规划、正文生成、工作流编排，以及可选的一致性检查能力。
+这是一个基于 Python 的小说写作 Agent 项目，当前已经打通两条可运行主链路：
 
-## 配置说明
+- Phase 1：创建项目、生成总纲与章节规划、生成单章正文、提交状态建议
+- Phase 2：在已有 Phase 1 项目上，按 `loop_state` 连续推进到第 5 章
 
-项目使用兼容 OpenAI SDK 的提供方配置：
+当前仓库的目标不是一次性解决几百章长篇自动化，而是先把“可规划、可写单章、可连续跑 5 章、可恢复”的最小闭环做稳定。
 
-```env
-OPENAI_API_KEY=your_api_key
-OPENAI_BASE_URL=https://your-openai-compatible-endpoint
-MODEL_NAME=your_model_name
-```
+## 当前已实现能力
 
-这种方式可以在不修改服务层代码的前提下，切换不同的 OpenAI 兼容提供方。
+### Phase 1
 
-## 如何切换到 DeepSeek API
+- `create-project`：创建项目目录和最小状态文件
+- `plan-novel`：生成并落盘 `outline.md`、`volumes.md`、`chapters.json`、`chXXX.plan.md`
+- `write-chapter`：基于已有章节规划生成正文初稿、改写稿、摘要、状态建议
+- `commit-suggestion`：将某一章的 suggestion 提交到正式状态文件
 
-将同样的环境变量替换为 DeepSeek 的配置即可：
+### Phase 2
 
-```env
-OPENAI_API_KEY=<DeepSeek API Key>
-OPENAI_BASE_URL=https://api.deepseek.com
-MODEL_NAME=deepseek-chat
-```
+- `init-loop`：初始化 `loop_state.json`
+- `show-status`：查看连续写作流程状态
+- `run-five`：从当前 `next_chapter_no` 顺序运行到第 5 章或失败位置
 
-不需要修改业务层服务代码，`core/llm_client.py` 会继续读取当前配置中的 `base_url` 和 `model_name`。
+## 环境准备
 
-## CLI 命令行运行方式
-
-运行最小 CLI：
-
-```bash
-python app.py
-```
-
-CLI 默认走 `core/workflow_service.py` 中的基础工作流路径，不会调用可选的一致性检查 companion API。
-
-## Workflow API 说明
-
-`run_basic_workflow()` 是默认的编排路径，能力包括：
-- 生成总纲
-- 生成章纲
-- 生成正文
-- 当 `core.rewrite_service` 可用时，对正文进行可选改写
-- 返回 `outline`、`chapter_plan`、`draft` 和 `rewritten_draft`
-
-`run_basic_workflow_with_consistency_check()` 是一个供开发者显式调用的 companion API，能力包括：
-- 先调用 `run_basic_workflow()`
-- 优先使用 `rewritten_draft`，如果没有则回退到 `draft`，作为一致性检查的正文输入
-- 在返回结果中追加 `consistency_check` 字段
-- 不影响默认 CLI 路径
-
-## 一致性检查上下文
-
-当前 companion API 会将以下内容传入 `core.checker_service.check_consistency()`：
-- `draft_text`：`rewritten_draft` 或 `draft`
-- `outline`：workflow 生成的总纲结果
-- `character_info`：当前仅使用从总纲中投影出的主角信息
-- `timeline`：从 `data/timeline.json` 读取的历史时间线事件
-
-时间线加载策略如下：
-- 如果 `data/timeline.json` 不存在，companion API 会回退为 `[]`
-- 如果时间线数据存在，只会将 `chapter_no` 小于当前章节号的历史事件传给 checker
-- 如果时间线数据存在但内容非法，一致性检查路径会通过 workflow 的错误包装机制失败，而不是静默忽略脏数据
-
-当前限制：
-- `character_info` 目前仍然只包含主角投影，还没有接入完整角色库
-- 默认 CLI 路径不会展示一致性检查结果
-- companion API 的定位是开发者显式调用的增强路径，而不是默认运行路径
-
-## 虚拟环境
-
-在项目根目录创建虚拟环境：
+推荐步骤：
 
 ```bash
 python -m venv .venv
 ```
 
-在 Git Bash 中激活：
+Windows PowerShell：
 
-```bash
-source .venv/Scripts/activate
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
 安装依赖：
@@ -89,22 +42,186 @@ source .venv/Scripts/activate
 python -m pip install -r requirements.txt
 ```
 
-确认当前解释器：
+当前依赖很少：
 
-```bash
-python -c "import sys; print(sys.executable)"
+- `python-dotenv`
+- `openai`
+- `pytest`
+
+## .env 配置说明
+
+项目通过 `.env` 读取 OpenAI 兼容接口配置。最小必需项：
+
+```env
+OPENAI_API_KEY=your_api_key
+OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
+MODEL_NAME=your_model_name
 ```
 
-## 测试
+如果你使用 DeepSeek，当前真实跑通配置示例是：
 
-运行一组聚焦测试：
-
-```bash
-python -m pytest tests/test_config.py tests/test_llm_client.py
+```env
+OPENAI_API_KEY=<your_deepseek_api_key>
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+MODEL_NAME=deepseek-chat
 ```
 
-运行全部测试：
+说明：
+
+- `OPENAI_BASE_URL` 应指向兼容接口的根地址
+- DeepSeek 建议显式使用 `/v1`
+- `MODEL_NAME` 需要与所用提供方的可用模型一致
+
+## 快速开始
+
+下面是一条从零开始的最小复现路径。
+
+### 1. 创建项目
 
 ```bash
-python -m pytest
+python phase1_cli.py create-project --root "D:/AI novel/workspace/demo_novel" --title "Demo Novel" --topic "玄幻复仇" --style "冷峻、克制、偏网文节奏" --target "男频长篇"
 ```
+
+### 2. 生成规划
+
+```bash
+python phase1_cli.py plan-novel --root "D:/AI novel/workspace/demo_novel"
+```
+
+预期产物：
+
+- `docs/outline.md`
+- `docs/volumes.md`
+- `chapters.json`
+- `docs/ch001.plan.md` 等章节规划文件
+
+### 3. 写第 1 章并提交状态
+
+```bash
+python phase1_cli.py write-chapter --root "D:/AI novel/workspace/demo_novel" --chapter 1
+python phase1_cli.py commit-suggestion --root "D:/AI novel/workspace/demo_novel" --chapter 1
+```
+
+### 4. 初始化 Phase 2 连续写作状态
+
+```bash
+python phase2_cli.py init-loop --root "D:/AI novel/workspace/demo_novel"
+```
+
+### 5. 运行到第 5 章
+
+```bash
+python phase2_cli.py run-five --root "D:/AI novel/workspace/demo_novel"
+```
+
+查看当前状态：
+
+```bash
+python phase2_cli.py show-status --root "D:/AI novel/workspace/demo_novel"
+```
+
+## Phase 1 命令示例
+
+```bash
+python phase1_cli.py create-project --root <project_root> --title <title> --topic <topic> --style <style> --target <target>
+python phase1_cli.py plan-novel --root <project_root>
+python phase1_cli.py write-chapter --root <project_root> --chapter 1
+python phase1_cli.py commit-suggestion --root <project_root> --chapter 1
+```
+
+Phase 1 推荐阅读：
+
+- `docs/phase1.md`
+
+## Phase 2 命令示例
+
+```bash
+python phase2_cli.py init-loop --root <project_root>
+python phase2_cli.py show-status --root <project_root>
+python phase2_cli.py run-five --root <project_root>
+```
+
+Phase 2 推荐阅读：
+
+- `docs/phase2_longform_usage.md`
+- `docs/phase2_longform_design.md`
+
+## 目录结构
+
+仓库层级：
+
+```text
+AI novel/
+├─ core/                  # 核心服务与 workflow
+├─ docs/                  # 使用说明与设计文档
+├─ prompts/               # 提示词模板
+├─ tests/                 # pytest 测试
+├─ workspace/             # 本地小说项目示例或运行产物
+├─ app.py                 # 旧入口，保留
+├─ phase1_cli.py          # Phase 1 CLI
+├─ phase2_cli.py          # Phase 2 CLI
+├─ config.py              # 配置加载
+└─ README.md
+```
+
+单个小说项目目录大致如下：
+
+```text
+<project_root>/
+├─ project.json
+├─ chapters.json
+├─ characters.json
+├─ timeline.json
+├─ foreshadow.json
+├─ loop_state.json              # Phase 2 流程状态
+├─ docs/
+│  ├─ outline.md
+│  ├─ volumes.md
+│  ├─ ch001.plan.md
+│  ├─ ch001.draft.md
+│  ├─ ch001.rewrite.md
+│  └─ ch001.summary.md
+├─ suggestions/
+│  └─ ch001.suggestion.json
+├─ checkpoints/
+│  └─ ch001.checkpoint.json
+└─ reviews/                     # 预留目录，当前未接主流程
+```
+
+## 当前限制
+
+- `app.py` 仍保留，但不是当前推荐主入口
+- Phase 2 当前只实现固定 5 章 workflow，不支持通用无限循环
+- 未接入 `review_service`
+- 未实现复杂上下文检索或长期记忆系统
+- 连续写作恢复语义目前完全依赖 `loop_state.json`
+- 仍然依赖模型较稳定地返回 JSON；虽然已做最小兼容，但不是通用鲁棒解析框架
+
+## 建议测试命令
+
+Phase 1 最小回归：
+
+```bash
+python -m pytest tests/test_phase1_e2e.py tests/test_phase2_commit_e2e.py
+```
+
+Phase 2 最小回归：
+
+```bash
+python -m pytest tests/longform/test_phase2_cli.py tests/longform/test_serial_workflow_service.py tests/longform/test_chapter_runner_service.py tests/longform/test_loop_state_service.py tests/longform/test_project_state_repository.py
+```
+
+相关链路一起验证：
+
+```bash
+python -m pytest tests/test_workflow_write_chapter.py tests/test_workflow_commit_suggestion.py tests/test_suggestion_service.py tests/longform/test_phase2_cli.py tests/longform/test_serial_workflow_service.py tests/longform/test_chapter_runner_service.py
+```
+
+## 后续计划
+
+当前建议的后续方向是保守演进，而不是推翻现有链路：
+
+- 继续提高 Phase 2 在真实环境下的稳定性
+- 在不破坏旧主流程的前提下扩展更长的连续写作编排
+- 把 review 能力以旁路方式接入，而不是先改主链路
+- 逐步增强上下文压缩、状态更新和错误可观测性

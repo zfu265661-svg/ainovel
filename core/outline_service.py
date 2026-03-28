@@ -34,7 +34,10 @@ def generate_outline(topic: str, style: str, target: str) -> dict[str, Any]:
         .replace("{target}", target)
     )
 
-    response_text = LLMClient().generate_text(prompt)
+    response_text = LLMClient().generate_text_with_context(
+        prompt,
+        stage_name="outline generation",
+    )
     outline = _parse_outline_json(response_text)
     _validate_required_fields(outline)
     return outline

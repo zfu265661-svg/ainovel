@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 from core.errors import ChapterPlanError, collect_missing_fields, parse_json_object
@@ -55,7 +56,12 @@ def generate_chapter_plan(
         .replace("{previous_summary}", normalized_previous_summary)
     )
 
-    response_text = LLMClient().generate_text(prompt)
+    volume_no = normalized_volume_info.get("volume_no")
+    response_text = LLMClient().generate_text_with_context(
+        prompt,
+        stage_name="chapter planning",
+        volume_no=volume_no if isinstance(volume_no, int) else None,
+    )
     chapter_plan = _parse_chapter_plan_json(response_text)
     _validate_required_fields(chapter_plan)
     _validate_beats(chapter_plan)
@@ -67,7 +73,7 @@ def generate_volume_chapters(
     volume_info: dict[str, Any],
     start_chapter_no: int,
 ) -> list[dict[str, Any]]:
-    """Generate a list of chapter plans for one volume."""
+    """Generate a list of chapter plans for one volume with a single LLM request."""
     if not isinstance(volume_info, dict):
         raise ChapterServiceError("volume_info must be a dictionary.")
 
@@ -76,29 +82,118 @@ def generate_volume_chapters(
         raise ChapterServiceError("volume_info must contain an integer 'volume_no'.")
 
     chapter_count = _extract_planned_chapter_count(volume_info)
-    chapter_plans: list[dict[str, Any]] = []
-
-    for offset in range(chapter_count):
-        current_chapter_no = start_chapter_no + offset
-        chapter_plan = generate_chapter_plan(
-            outline=outline,
-            volume_info=volume_info,
-            chapter_no=current_chapter_no,
-            previous_summary="",
+    prompt_template = load_prompt("volume_chapters.txt")
+    prompt = (
+        prompt_template.replace(
+            "{outline}",
+            json.dumps(outline, ensure_ascii=False, indent=2),
         )
-        chapter_plans.append(
+        .replace(
+            "{volume_info}",
+            json.dumps(volume_info, ensure_ascii=False, indent=2),
+        )
+        .replace("{start_chapter_no}", str(start_chapter_no))
+        .replace("{chapter_count}", str(chapter_count))
+    )
+
+    response_text = LLMClient().generate_text_with_context(
+        prompt,
+        stage_name="volume chapter planning",
+        volume_no=volume_no,
+    )
+    chapter_plans = _parse_volume_chapter_plans_json(response_text, chapter_count)
+    return _normalize_volume_chapter_plans(
+        chapter_plans=chapter_plans,
+        volume_no=volume_no,
+        start_chapter_no=start_chapter_no,
+    )
+
+
+def _parse_chapter_plan_json(response_text: str) -> dict[str, Any]:
+    return parse_json_object(response_text, ChapterParseError, "Chapter plan")
+
+
+def _parse_volume_chapter_plans_json(
+    response_text: str,
+    expected_count: int,
+) -> list[dict[str, Any]]:
+    candidate = _extract_first_json_array_text(response_text)
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        snippet = _build_response_snippet(response_text)
+        print(
+            "[LLM] stage=volume chapter planning status=parse_failure "
+            f"response_snippet={snippet}",
+            file=sys.stderr,
+        )
+        raise ChapterParseError(
+            "Volume chapter plan response is not valid JSON: "
+            f"{exc.msg} | response_snippet={snippet}"
+        ) from exc
+
+    if not isinstance(parsed, list):
+        raise ChapterParseError("Volume chapter plan response must be a JSON array.")
+
+    if not all(isinstance(item, dict) for item in parsed):
+        raise ChapterParseError("Each volume chapter plan entry must be a JSON object.")
+
+    if len(parsed) != expected_count:
+        raise ChapterParseError(
+            "Volume chapter plan response must contain exactly "
+            f"{expected_count} chapter plan(s)."
+        )
+
+    return parsed
+
+
+def _extract_first_json_array_text(response_text: str) -> str:
+    decoder = json.JSONDecoder()
+    normalized = response_text.strip()
+
+    for start_index, char in enumerate(normalized):
+        if char != "[":
+            continue
+
+        try:
+            parsed, end_index = decoder.raw_decode(normalized[start_index:])
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(parsed, list):
+            return normalized[start_index : start_index + end_index]
+
+    return normalized
+
+
+def _build_response_snippet(response_text: str, max_chars: int = 200) -> str:
+    collapsed = " ".join(response_text.strip().split())
+    if len(collapsed) <= max_chars:
+        return repr(collapsed)
+    return repr(collapsed[:max_chars] + "...")
+
+
+def _normalize_volume_chapter_plans(
+    chapter_plans: list[dict[str, Any]],
+    volume_no: int,
+    start_chapter_no: int,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+
+    for index, chapter_plan in enumerate(chapter_plans):
+        _validate_required_fields(chapter_plan)
+        _validate_beats(chapter_plan)
+        normalized.append(
             {
                 **chapter_plan,
+                "chapter_no": start_chapter_no + index,
                 "volume_no": volume_no,
                 "status": "planned",
             }
         )
 
-    return chapter_plans
-
-
-def _parse_chapter_plan_json(response_text: str) -> dict[str, Any]:
-    return parse_json_object(response_text, ChapterParseError, "Chapter plan")
+    return normalized
 
 
 def _validate_required_fields(chapter_plan: dict[str, Any]) -> None:

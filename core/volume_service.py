@@ -14,6 +14,7 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "goal",
     "core_conflict",
 )
+MAX_PHASE1_CHAPTERS_PER_VOLUME = 5
 
 
 class VolumeServiceError(NovelAgentError):
@@ -32,13 +33,16 @@ def generate_volume_plan(outline: dict[str, Any]) -> list[dict[str, Any]]:
         json.dumps(outline, ensure_ascii=False, indent=2),
     )
 
-    response_text = LLMClient().generate_text(prompt)
+    response_text = LLMClient().generate_text_with_context(
+        prompt,
+        stage_name="volume plan generation",
+    )
     if not response_text.strip():
         raise VolumeParseError("Volume plan response is empty.")
 
     volume_plan = _parse_volume_plan_json(response_text)
     _validate_volume_plan(volume_plan)
-    return volume_plan
+    return _normalize_volume_plan(volume_plan)
 
 
 def _parse_volume_plan_json(response_text: str) -> list[dict[str, Any]]:
@@ -66,3 +70,41 @@ def _validate_volume_plan(volume_plan: list[dict[str, Any]]) -> None:
             raise VolumeParseError(
                 f"Volume plan entry {index} is missing required field(s): {missing}"
             )
+
+        if not _has_valid_chapter_count(volume):
+            raise VolumeParseError(
+                "Volume plan entry "
+                f"{index} must contain a positive 'planned_chapters' or 'chapter_count'."
+            )
+
+
+def _has_valid_chapter_count(volume: dict[str, Any]) -> bool:
+    planned_chapters = volume.get("planned_chapters")
+    if isinstance(planned_chapters, int) and planned_chapters > 0:
+        return True
+
+    chapter_count = volume.get("chapter_count")
+    if isinstance(chapter_count, int) and chapter_count > 0:
+        return True
+
+    return False
+
+
+def _normalize_volume_plan(volume_plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+
+    for volume in volume_plan:
+        normalized_volume = dict(volume)
+        planned_chapters = normalized_volume.get("planned_chapters")
+        if isinstance(planned_chapters, int) and planned_chapters > MAX_PHASE1_CHAPTERS_PER_VOLUME:
+            normalized_volume["planned_chapters"] = MAX_PHASE1_CHAPTERS_PER_VOLUME
+        elif isinstance(planned_chapters, list) and len(planned_chapters) > MAX_PHASE1_CHAPTERS_PER_VOLUME:
+            normalized_volume["planned_chapters"] = planned_chapters[:MAX_PHASE1_CHAPTERS_PER_VOLUME]
+
+        chapter_count = normalized_volume.get("chapter_count")
+        if isinstance(chapter_count, int) and chapter_count > MAX_PHASE1_CHAPTERS_PER_VOLUME:
+            normalized_volume["chapter_count"] = MAX_PHASE1_CHAPTERS_PER_VOLUME
+
+        normalized.append(normalized_volume)
+
+    return normalized

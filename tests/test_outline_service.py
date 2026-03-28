@@ -21,8 +21,15 @@ def test_generate_outline_safely_injects_real_placeholders(
     monkeypatch.setattr("core.outline_service.load_prompt", lambda name: prompt_template)
 
     class FakeLLMClient:
-        def generate_text(self, prompt: str) -> str:
+        def generate_text_with_context(
+            self,
+            prompt: str,
+            stage_name: str | None = None,
+            volume_no: int | None = None,
+        ) -> str:
             assert prompt == "topic=修仙;style=热血;target=长篇连载"
+            assert stage_name == "outline generation"
+            assert volume_no is None
             return json.dumps(outline, ensure_ascii=False)
 
     monkeypatch.setattr("core.outline_service.LLMClient", FakeLLMClient)
@@ -48,11 +55,17 @@ def test_generate_outline_does_not_fail_when_template_contains_json_braces(
     monkeypatch.setattr("core.outline_service.load_prompt", lambda name: prompt_template)
 
     class FakeLLMClient:
-        def generate_text(self, prompt: str) -> str:
+        def generate_text_with_context(
+            self,
+            prompt: str,
+            stage_name: str | None = None,
+            volume_no: int | None = None,
+        ) -> str:
             assert '"title": "示例"' in prompt
             assert "题材：修仙" in prompt
             assert "风格：热血" in prompt
             assert "目标：长篇连载" in prompt
+            assert stage_name == "outline generation"
             return json.dumps(outline, ensure_ascii=False)
 
     monkeypatch.setattr("core.outline_service.LLMClient", FakeLLMClient)
@@ -68,7 +81,12 @@ def test_generate_outline_raises_for_invalid_json(
     monkeypatch.setattr("core.outline_service.load_prompt", lambda name: "{topic}")
 
     class FakeLLMClient:
-        def generate_text(self, prompt: str) -> str:
+        def generate_text_with_context(
+            self,
+            prompt: str,
+            stage_name: str | None = None,
+            volume_no: int | None = None,
+        ) -> str:
             return "not json"
 
     monkeypatch.setattr("core.outline_service.LLMClient", FakeLLMClient)
@@ -83,7 +101,12 @@ def test_generate_outline_raises_for_missing_required_fields(
     monkeypatch.setattr("core.outline_service.load_prompt", lambda name: "{topic}")
 
     class FakeLLMClient:
-        def generate_text(self, prompt: str) -> str:
+        def generate_text_with_context(
+            self,
+            prompt: str,
+            stage_name: str | None = None,
+            volume_no: int | None = None,
+        ) -> str:
             return json.dumps(
                 {
                     "title": "测试标题",

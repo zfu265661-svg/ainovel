@@ -7,7 +7,9 @@
    - title
    - goal
    - core_conflict
+   - chapter_count
 3. 分卷数量应与总纲规模相匹配，内容保持连贯。
+4. 当前是 Phase 1 最小规划，请将每卷 chapter_count 控制在 3 到 5 之间，不要给出几十章的大卷。
 
 小说总纲：
 {outline}
