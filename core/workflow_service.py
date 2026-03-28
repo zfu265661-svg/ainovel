@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -12,6 +13,16 @@ from core.chapter_service import generate_volume_chapters
 from core.draft_service import generate_draft
 from core.errors import NovelAgentError
 from core.foreshadow_service import load_foreshadows
+from core.longform.chapter_context_service import build_chapter_context
+from core.longform.consistency_service import run_review_consistency_check
+from core.longform.project_state_repository import get_chapter_review_path
+from core.longform.review_service import create_or_refresh_review, load_review_for_commit
+from core.longform.snapshot_service import (
+    cleanup_snapshot_after_commit,
+    create_pending_snapshot,
+    handle_preflight_snapshot,
+    recover_failed_commit_with_snapshot,
+)
 from core.outline_service import generate_outline
 from core.project_service import (
     get_chapter_draft_path,
@@ -57,7 +68,6 @@ class _StorageModule(Protocol):
 
 
 T = TypeVar("T")
-MAX_DRAFT_TIMELINE_EVENTS = 5
 
 
 def create_project(
@@ -127,13 +137,16 @@ def write_chapter(project_root: str, chapter_no: int) -> dict[str, Any]:
     timeline = _run_stage("timeline state load", lambda: _load_timeline_state(paths))
     foreshadow = _run_stage("foreshadow state load", lambda: _load_foreshadow_state(paths))
 
-    context_bundle = _build_draft_context(
-        chapter_no=chapter_no,
-        outline=outline,
-        previous_summary=previous_summary,
-        characters=characters,
-        timeline=timeline,
-        foreshadow=foreshadow,
+    context_bundle = _run_stage(
+        "draft context assembly",
+        lambda: build_chapter_context(
+            chapter_no=chapter_no,
+            outline=outline,
+            previous_summary=previous_summary,
+            characters=characters,
+            timeline=timeline,
+            foreshadow=foreshadow,
+        ),
     )
     draft_text = _run_stage(
         "draft generation",
@@ -185,22 +198,103 @@ def commit_suggestion(project_root: str, chapter_no: int) -> dict[str, Any]:
     """Commit one chapter suggestion file into the formal state JSON files."""
     paths = get_project_file_paths(project_root)
     suggestion_path = get_chapter_suggestion_path(project_root, chapter_no)
+    preflight_result = _run_stage(
+        "preflight snapshot handling",
+        lambda: handle_preflight_snapshot(project_root, chapter_no),
+    )
+    if isinstance(preflight_result, dict) and preflight_result.get("status") == "already_committed":
+        approved_suggestion = cast(dict[str, Any], preflight_result["approved_suggestion"])
+        return _build_commit_result_from_suggestion(
+            suggestion=approved_suggestion,
+            chapter_no=chapter_no,
+            suggestion_path=suggestion_path,
+        )
 
-    suggestion = _run_stage(
+    _run_stage(
         "suggestion load",
         lambda: _load_suggestion_for_commit(suggestion_path, chapter_no),
     )
-    characters_state = _run_stage(
+    _run_stage(
+        "review creation",
+        lambda: create_or_refresh_review(project_root, chapter_no),
+    )
+    _run_stage(
+        "review consistency check",
+        lambda: run_review_consistency_check(project_root, chapter_no),
+    )
+    review = _run_stage(
+        "review load",
+        lambda: load_review_for_commit(project_root, chapter_no),
+    )
+    approved_suggestion = cast(dict[str, Any], review["approved_suggestion"])
+    prepared_commit = _prepare_preloaded_suggestion_commit(
+        paths=paths,
+        suggestion=approved_suggestion,
+        chapter_no=chapter_no,
+        suggestion_path=suggestion_path,
+    )
+    _run_stage(
+        "snapshot persistence",
+        lambda: create_pending_snapshot(
+            project_root=project_root,
+            chapter_no=chapter_no,
+            review_path=get_chapter_review_path(project_root, chapter_no),
+            suggestion_path=suggestion_path,
+            state_before=cast(dict[str, Any], prepared_commit["state_before"]),
+        ),
+    )
+
+    try:
+        _persist_prepared_formal_state(
+            paths=paths,
+            state_after=cast(dict[str, dict[str, Any]], prepared_commit["state_after"]),
+        )
+        _run_stage(
+            "commit marker persistence",
+            lambda: _persist_commit_markers(
+                project_root=project_root,
+                chapter_no=chapter_no,
+                review=review,
+            ),
+        )
+    except Exception as exc:
+        try:
+            _run_stage(
+                "commit restore",
+                lambda: recover_failed_commit_with_snapshot(
+                    project_root=project_root,
+                    chapter_no=chapter_no,
+                    failure_reason=str(exc),
+                ),
+            )
+        except Exception:
+            raise
+        raise
+
+    _run_stage(
+        "snapshot cleanup",
+        lambda: cleanup_snapshot_after_commit(project_root, chapter_no),
+    )
+    return cast(dict[str, Any], prepared_commit["result"])
+
+
+def _prepare_preloaded_suggestion_commit(
+    paths: dict[str, str],
+    suggestion: dict[str, Any],
+    chapter_no: int,
+    suggestion_path: str,
+) -> dict[str, Any]:
+    characters_payload, characters_state = _run_stage(
         "character state load",
-        lambda: _load_state_container(paths["characters_json"], "characters"),
+        lambda: _load_state_payload_and_items(paths["characters_json"], "characters"),
     )
-    timeline_state = _run_stage(
+    timeline_payload, timeline_state = _run_stage(
         "timeline state load",
-        lambda: _load_state_container(paths["timeline_json"], "events"),
+        lambda: _load_state_payload_and_items(paths["timeline_json"], "events"),
     )
-    foreshadow_state = _run_stage(
+    foreshadow_payload, foreshadow_state = _run_stage(
         "foreshadow state load",
-        lambda: _load_state_container(paths["foreshadow_json"], "items"),
+        lambda: _load_state_payload_and_items(paths["foreshadow_json"], "items"),
     )
 
     updated_characters = _apply_character_updates(
@@ -218,36 +312,48 @@ def commit_suggestion(project_root: str, chapter_no: int) -> dict[str, Any]:
         chapter_no,
     )
 
-    _run_stage(
-        "character state persistence",
-        lambda: save_json(paths["characters_json"], {"characters": updated_characters}),
-    )
-    _run_stage(
-        "timeline state persistence",
-        lambda: save_json(paths["timeline_json"], {"events": updated_timeline}),
-    )
-    _run_stage(
-        "foreshadow state persistence",
-        lambda: save_json(paths["foreshadow_json"], {"items": updated_foreshadow}),
-    )
+    return {
+        "state_before": {
+            "characters": deepcopy(characters_payload),
+            "timeline": deepcopy(timeline_payload),
+            "foreshadow": deepcopy(foreshadow_payload),
+        },
+        "state_after": {
+            "characters": {"characters": updated_characters},
+            "timeline": {"events": updated_timeline},
+            "foreshadow": {"items": updated_foreshadow},
+        },
+        "result": _build_commit_result_from_suggestion(
+            suggestion=suggestion,
+            chapter_no=chapter_no,
+            suggestion_path=suggestion_path,
+        ),
+    }
 
+
+def _persist_commit_markers(
+    project_root: str,
+    chapter_no: int,
+    review: dict[str, Any],
+) -> None:
+    suggestion_path = get_chapter_suggestion_path(project_root, chapter_no)
+    review_path = get_chapter_review_path(project_root, chapter_no)
+    suggestion = _load_suggestion_for_commit(suggestion_path, chapter_no)
+    original_review = dict(review)
+
+    committed_review = {
+        **original_review,
+        "committed": True,
+        "committed_chapter_no": chapter_no,
+    }
     committed_suggestion = {
         **suggestion,
         "committed": True,
         "committed_chapter_no": chapter_no,
     }
-    _run_stage(
-        "suggestion commit marker persistence",
-        lambda: save_json(suggestion_path, committed_suggestion),
-    )
 
-    return {
-        "chapter_no": chapter_no,
-        "suggestion_path": suggestion_path,
-        "characters_updated": len(cast(list[Any], suggestion["character_updates"])),
-        "timeline_updated": len(cast(list[Any], suggestion["timeline_updates"])),
-        "foreshadow_updated": len(cast(list[Any], suggestion["foreshadow_updates"])),
-    }
+    save_json(review_path, committed_review)
+    save_json(suggestion_path, committed_suggestion)
 
 
 def run_basic_workflow(
@@ -645,69 +751,6 @@ def _load_foreshadow_state(paths: dict[str, str]) -> list[Any]:
     return load_foreshadows(paths["project_root"])
 
 
-def _build_draft_context(
-    chapter_no: int,
-    outline: dict[str, Any],
-    previous_summary: str,
-    characters: list[Any],
-    timeline: list[Any],
-    foreshadow: list[Any],
-) -> dict[str, Any]:
-    return {
-        "outline": outline,
-        "previous_summary": previous_summary,
-        "characters": _compact_character_context(characters),
-        "timeline": _select_recent_timeline_events(timeline, chapter_no),
-        "foreshadow": _select_active_foreshadow_items(foreshadow),
-    }
-
-
-def _compact_character_context(characters: list[Any]) -> list[dict[str, Any]]:
-    compacted: list[dict[str, Any]] = []
-
-    for item in characters:
-        if not isinstance(item, dict):
-            continue
-
-        name = str(item.get("name", "")).strip()
-        if not name:
-            continue
-
-        traits = item.get("traits", [])
-        compacted.append(
-            {
-                "name": name,
-                "role": str(item.get("role", "")).strip(),
-                "traits": traits if isinstance(traits, list) else [],
-                "current_state": str(item.get("current_state", "")).strip(),
-            }
-        )
-
-    return compacted
-
-
-def _select_recent_timeline_events(
-    timeline: list[Any],
-    chapter_no: int,
-) -> list[dict[str, Any]]:
-    historical_events = [
-        cast(dict[str, Any], event)
-        for event in timeline
-        if isinstance(event, dict)
-        and isinstance(event.get("chapter_no"), int)
-        and cast(int, event["chapter_no"]) < chapter_no
-    ]
-    return historical_events[-MAX_DRAFT_TIMELINE_EVENTS:]
-
-
-def _select_active_foreshadow_items(foreshadow: list[Any]) -> list[dict[str, Any]]:
-    return [
-        cast(dict[str, Any], item)
-        for item in foreshadow
-        if isinstance(item, dict) and item.get("status") == "open"
-    ]
-
-
 def _load_suggestion_for_commit(path: str, chapter_no: int) -> dict[str, Any]:
     data = load_json(path)
     if not isinstance(data, dict):
@@ -762,6 +805,53 @@ def _validate_commit_updates(field_name: str, updates: Any) -> None:
             raise ValueError(
                 f"Suggestion field '{field_name}' entry {index} is missing required field(s): {missing}"
             )
+
+
+def _build_commit_result_from_suggestion(
+    suggestion: dict[str, Any],
+    chapter_no: int,
+    suggestion_path: str,
+) -> dict[str, Any]:
+    return {
+        "chapter_no": chapter_no,
+        "suggestion_path": suggestion_path,
+        "characters_updated": len(cast(list[Any], suggestion["character_updates"])),
+        "timeline_updated": len(cast(list[Any], suggestion["timeline_updates"])),
+        "foreshadow_updated": len(cast(list[Any], suggestion["foreshadow_updates"])),
+    }
+
+
+def _persist_prepared_formal_state(
+    paths: dict[str, str],
+    state_after: dict[str, dict[str, Any]],
+) -> None:
+    _run_stage(
+        "character state persistence",
+        lambda: save_json(paths["characters_json"], state_after["characters"]),
+    )
+    _run_stage(
+        "timeline state persistence",
+        lambda: save_json(paths["timeline_json"], state_after["timeline"]),
+    )
+    _run_stage(
+        "foreshadow state persistence",
+        lambda: save_json(paths["foreshadow_json"], state_after["foreshadow"]),
+    )
+
+
+def _load_state_payload_and_items(
+    path: str,
+    key: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    data = load_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"State file {path} must contain a JSON object.")
+
+    items = data.get(key)
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ValueError(f"State file {path} must contain a '{key}' array of objects.")
+
+    return data, cast(list[dict[str, Any]], items)
 
 
 def _load_state_container(path: str, key: str) -> list[dict[str, Any]]:

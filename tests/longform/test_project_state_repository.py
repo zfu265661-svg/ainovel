@@ -8,6 +8,7 @@ from core.longform.project_state_repository import (
     ensure_longform_directories,
     get_chapter_checkpoint_path,
     get_chapter_review_path,
+    get_chapter_snapshot_path,
     get_longform_file_paths,
     initialize_loop_state,
     load_project_loop_state,
@@ -38,6 +39,7 @@ def test_initialize_loop_state_creates_only_longform_process_files(tmp_path: Pat
     assert load_project_loop_state(str(project_root)) == state
     assert (project_root / "checkpoints").is_dir()
     assert (project_root / "reviews").is_dir()
+    assert not (project_root / "snapshots").exists()
     assert load_json(str(project_root / "characters.json")) == original_characters
     assert load_json(str(project_root / "timeline.json")) == original_timeline
     assert load_json(str(project_root / "foreshadow.json")) == original_foreshadow
@@ -74,4 +76,7 @@ def test_longform_paths_use_canonical_naming_rules(tmp_path: Path) -> None:
     )
     assert get_chapter_review_path(str(project_root), 7) == str(
         project_root / "reviews" / "ch007.review.json"
+    )
+    assert get_chapter_snapshot_path(str(project_root), 9) == str(
+        project_root / "snapshots" / "ch009.snapshot.json"
     )

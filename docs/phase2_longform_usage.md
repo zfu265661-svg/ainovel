@@ -1,176 +1,230 @@
 # Phase 2 Longform Usage
 
-## 当前目标与边界
+## 目标
 
-Phase 2 当前的目标不是重写整个项目，而是在已有 Phase 1 能力之上，提供一个最小可用的长篇连续写作 workflow：
+Phase 2 的当前目标是把既有 Phase 1 单章闭环包装成一个：
 
-- 初始化流程状态
-- 从当前 `next_chapter_no` 继续运行
-- 顺序推进到第 5 章
-- 在失败时保留足够状态，便于继续恢复
+- 可顺序推进到第 5 章
+- 失败后可恢复
+- 状态可读
+- artifact 可审计
 
-当前不覆盖：
+的最小长篇 workflow。
 
-- 通用无限循环
-- review 主流程接入
-- 复杂上下文检索
-- 自动扩展更多章节规划
+它不是无限循环器，也不是新的内容生成 workflow。
 
-## Phase 1 与 Phase 2 的区别
+## 当前主入口
 
-Phase 1 负责“单步能力”：
+推荐入口：
 
-- 创建项目
-- 生成规划
-- 写单章
-- 提交 suggestion
+- `phase2_cli.py`
 
-Phase 2 负责“连续推进”：
-
-- 管理 `loop_state.json`
-- 把单章闭环固化成可恢复步骤
-- 从当前状态顺序推进到第 5 章
-
-Phase 2 不替代 Phase 1，而是复用 Phase 1。
+Phase 2 会复用 Phase 1 的写作和提交能力，不会替代 `phase1_cli.py`。
 
 ## 前置条件
 
-使用 Phase 2 之前，应先确保：
-
-1. 已安装依赖并配置好 `.env`
-2. 已通过 Phase 1 创建项目
-3. 已通过 `plan-novel` 生成好章节规划
-
-最小前置命令：
+使用 Phase 2 之前，建议先完成：
 
 ```bash
-python phase1_cli.py create-project --root <project_root> --title <title> --topic <topic> --style <style> --target <target>
-python phase1_cli.py plan-novel --root <project_root>
+python phase1_cli.py create-project --root "<project_root>" --title "<title>" --topic "<topic>" --style "<style>" --target "<target>"
+python phase1_cli.py plan-novel --root "<project_root>"
+python phase2_cli.py init-loop --root "<project_root>"
 ```
 
-## 命令说明
+## 当前命令
 
-### 1. 初始化 loop_state
+### 初始化 loop state
 
 ```bash
-python phase2_cli.py init-loop --root <project_root>
+python phase2_cli.py init-loop --root "<project_root>"
 ```
 
 作用：
 
 - 创建 `loop_state.json`
 - 创建 `checkpoints/`
-- 创建 `reviews/` 预留目录
+- 创建 `reviews/`
 
-当前固定目标章节数为 5。
+`snapshots/` 目录按需创建，不会在 `init-loop` 时预创建。
 
-### 2. 查看状态
+### 查看状态
 
 ```bash
-python phase2_cli.py show-status --root <project_root>
+python phase2_cli.py show-status --root "<project_root>"
 ```
 
-当前会显示的关键字段包括：
+当前会展示这些关键字段：
 
-- `status`
+- `workflow_status`
 - `start_chapter_no`
 - `target_chapter_count`
-- `next_chapter_no`
-- `last_completed_chapter_no`
 - `current_chapter_no`
+- `next_chapter_no`
+- `loop_state_last_completed_chapter_no`
+- `last_successfully_committed_chapter_no`
+- `last_successfully_committed_source`
+- `commit_scan_status`
+- `commit_loop_drift`
+- `last_attempted_chapter_no`
+- `last_attempt_status`
+- `last_failure_stage`
+- `last_error`
+- `unresolved_snapshot_exists`
+- `unresolved_snapshot_chapters`
+- `stale_snapshot_exists`
+- `stale_snapshot_chapters`
+- `artifact_focus_chapter_no`
+- `artifact_relation_status`
+- `checkpoint_path`
+- `review_path`
+- `suggestion_path`
+- `snapshot_path`
 
-### 3. 顺序运行到第 5 章
+其中：
+
+- `last_successfully_committed_chapter_no`
+  - 优先来自 canonical review/suggestion 的 committed scan
+  - 扫描无法可靠确定时，回退到 `loop_state_last_completed_chapter_no`
+- `commit_loop_drift`
+  - 表示 loop_state 视角和 artifact scan 视角出现偏差
+- `artifact_relation_status`
+  - `aligned`
+  - `partial`
+  - `mismatched`
+  - `unknown`
+
+### 顺序运行到第 5 章
 
 ```bash
-python phase2_cli.py run-five --root <project_root>
+python phase2_cli.py run-five --root "<project_root>"
 ```
 
 作用：
 
-- 从当前 `loop_state.next_chapter_no` 开始
-- 顺序调用现有单章闭环
-- 成功则继续下一章
-- 某一章失败则立即停止
+- 从 `loop_state.next_chapter_no` 开始
+- 顺序执行单章闭环
+- 成功时推进到下一章
+- 某章失败时立即停止
 
-不需要单独的 `resume` 命令；再次执行 `run-five` 即可按当前状态继续。
+不需要单独的 `resume` 命令；再次执行 `run-five` 即会从当前可恢复位置继续。
+
+## 当前真实主链
+
+Phase 2 每章实际走的是：
+
+`write_chapter -> commit_suggestion`
+
+而 `commit_suggestion` 内部已经是：
+
+`suggestion -> review -> consistency_check -> snapshot -> commit -> cleanup`
+
+这意味着：
+
+- review 已进入主链
+- deterministic consistency checks 已进入主链
+- snapshot / restore 已进入主链
+- 但 CLI 命令面没有变化
+
+## 当前 artifact 语义
+
+### `loop_state.json`
+
+流程状态，不承载正式故事状态。
+
+### `checkpoints/chXXX.checkpoint.json`
+
+单章尝试结果索引，当前包含：
+
+- `chapter_no`
+- `status`
+- `failure_stage`
+- `artifacts`
+- `suggestion_committed`
+- `error`
+- `loop_state`
+
+### `reviews/chXXX.review.json`
+
+显式 commit 依据，包含：
+
+- `approved_suggestion`
+- `consistency_check`
+- `committed`
+
+### `suggestions/chXXX.suggestion.json`
+
+原始 proposal。
+
+### `snapshots/chXXX.snapshot.json`
+
+formal commit 前的恢复快照。
+
+成功提交后通常会被删除；如果失败恢复过，可能保留为 `restored` 供排障使用。
+
+## 当前失败恢复语义
+
+### unresolved snapshot
+
+如果 rerun 前发现 snapshot 存在，且 review / suggestion 没有同时 committed：
+
+- 视为上次 commit 未完成
+- 会先尝试 restore
+- restore 成功后，才继续本次 commit
+
+### stale snapshot
+
+如果 snapshot 存在，但 review / suggestion 都已经 committed：
+
+- 视为 stale snapshot
+- 不回滚 formal state
+- 只尝试 cleanup
+- cleanup 失败会显式报错，不会静默忽略
+
+## 推荐排障顺序
+
+如果 `run-five` 失败，推荐按这个顺序看：
+
+1. 先看 CLI 输出里的 `checkpoint_path`
+   - 它是总索引，优先定位 `failure_stage`、`error`、`artifacts`
+2. 如果有 `snapshot_path`，或 `show-status` 显示 unresolved / stale snapshot
+   - 再看 snapshot
+3. 再看 `review_path`
+   - 重点看 `committed`、`consistency_check`、`approved_suggestion`
+4. 最后看 `suggestion_path`
+
+如果你只想知道“现在应该继续跑还是先修状态”，先执行：
+
+```bash
+python phase2_cli.py show-status --root "<project_root>"
+```
 
 ## 最小使用示例
 
 ```bash
-python phase1_cli.py create-project --root "D:/AI novel/workspace/demo_novel" --title "Demo Novel" --topic "玄幻复仇" --style "冷峻、克制、偏网文节奏" --target "男频长篇"
+python phase1_cli.py create-project --root "D:/AI novel/workspace/demo_novel" --title "Demo Novel" --topic "玄幻复仇" --style "冷系、克制、偏网文章节节奏" --target "男频长篇"
 python phase1_cli.py plan-novel --root "D:/AI novel/workspace/demo_novel"
 python phase2_cli.py init-loop --root "D:/AI novel/workspace/demo_novel"
 python phase2_cli.py show-status --root "D:/AI novel/workspace/demo_novel"
 python phase2_cli.py run-five --root "D:/AI novel/workspace/demo_novel"
 ```
 
-如果中途失败，直接再次执行：
+中途失败后直接再跑：
 
 ```bash
 python phase2_cli.py run-five --root "D:/AI novel/workspace/demo_novel"
 ```
 
-## loop_state / resume 语义
+## 当前边界
 
-`loop_state.json` 只管理流程进度，不管理正式故事状态。
+Phase 2 当前仍然不做：
 
-它不替代：
+- 超过第 5 章的泛化自动推进
+- 新 CLI 命令
+- LLM checker 默认接入
+- 更丰富的报告导出格式
 
-- `characters.json`
-- `timeline.json`
-- `foreshadow.json`
+## 相关文档
 
-关键字段说明：
-
-- `next_chapter_no`
-  - 下次恢复时应从哪一章开始
-- `last_completed_chapter_no`
-  - 最近一章已经完整提交成功的章节号
-- `current_chapter_no`
-  - 当前尝试执行的章节号，失败时可用于定位
-- `status`
-  - `ready`、`failed`、`completed` 等流程状态
-
-当前 resume 规则：
-
-- 只有在该章 `suggestion` 提交成功后，才推进 `next_chapter_no`
-- 如果 `write_chapter` 或 `commit_suggestion` 失败，则不推进 `next_chapter_no`
-- 再次运行 `run-five` 时，默认从 `next_chapter_no` 继续
-
-## 运行产物
-
-Phase 2 在项目目录下额外使用这些文件和目录：
-
-- `loop_state.json`
-- `checkpoints/chXXX.checkpoint.json`
-- `reviews/` 预留目录
-
-单章成功后，仍然主要复用 Phase 1 产物：
-
-- `docs/chXXX.draft.md`
-- `docs/chXXX.rewrite.md`
-- `docs/chXXX.summary.md`
-- `suggestions/chXXX.suggestion.json`
-
-## 当前已知限制
-
-- 当前只支持固定跑到第 5 章
-- 不支持通用无限循环
-- 不接入 `review_service`
-- 不做复杂上下文检索
-- 不自动新建更多章节规划
-- `reviews/` 当前只是预留目录，未进入主流程
-
-## 建议测试命令
-
-最小相关测试：
-
-```bash
-python -m pytest tests/longform/test_phase2_cli.py tests/longform/test_serial_workflow_service.py tests/longform/test_chapter_runner_service.py tests/longform/test_loop_state_service.py tests/longform/test_project_state_repository.py
-```
-
-如果要带 Phase 1 关键链路一起验证：
-
-```bash
-python -m pytest tests/test_workflow_write_chapter.py tests/test_workflow_commit_suggestion.py tests/test_suggestion_service.py tests/longform/test_phase2_cli.py tests/longform/test_serial_workflow_service.py tests/longform/test_chapter_runner_service.py
-```
+- `README.md`
+- `docs/phase1.md`
+- `docs/phase2_longform_design.md`

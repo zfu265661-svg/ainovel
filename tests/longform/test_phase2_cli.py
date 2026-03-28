@@ -21,25 +21,42 @@ def test_init_loop_command_runs_successfully(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "初始化完成。" in output
-    assert "项目路径: D:/tmp/novel" in output
-    assert "目标章节数: 5" in output
+    assert "D:/tmp/novel" in output
+    assert "5" in output
 
 
-def test_show_status_command_prints_current_loop_state(
+def test_show_status_command_prints_status_report(
     monkeypatch,
     capsys,
 ) -> None:
     monkeypatch.setattr(
         phase2_cli,
-        "load_project_loop_state",
+        "build_project_status_report",
         lambda project_root: {
-            "status": "ready",
+            "workflow_status": "ready",
             "start_chapter_no": 1,
             "target_chapter_count": 5,
-            "next_chapter_no": 3,
-            "last_completed_chapter_no": 2,
             "current_chapter_no": None,
+            "next_chapter_no": 3,
+            "loop_state_last_completed_chapter_no": 2,
+            "last_successfully_committed_chapter_no": 2,
+            "last_successfully_committed_source": "artifact_scan",
+            "commit_scan_status": "exact",
+            "commit_loop_drift": False,
+            "last_attempted_chapter_no": 3,
+            "last_attempt_status": "ready",
+            "last_failure_stage": None,
+            "last_error": None,
+            "unresolved_snapshot_exists": False,
+            "unresolved_snapshot_chapters": [],
+            "stale_snapshot_exists": False,
+            "stale_snapshot_chapters": [],
+            "artifact_focus_chapter_no": 3,
+            "artifact_relation_status": "partial",
+            "checkpoint_path": "D:/tmp/novel/checkpoints/ch003.checkpoint.json",
+            "review_path": "D:/tmp/novel/reviews/ch003.review.json",
+            "suggestion_path": "D:/tmp/novel/suggestions/ch003.suggestion.json",
+            "snapshot_path": "D:/tmp/novel/snapshots/ch003.snapshot.json",
         },
     )
 
@@ -47,10 +64,11 @@ def test_show_status_command_prints_current_loop_state(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "当前状态。" in output
-    assert "状态: ready" in output
-    assert "下一章节: 3" in output
-    assert "已完成到: 2" in output
+    assert "workflow_status: ready" in output
+    assert "next_chapter_no: 3" in output
+    assert "last_successfully_committed_chapter_no: 2" in output
+    assert "artifact_relation_status: partial" in output
+    assert "review_path: D:/tmp/novel/reviews/ch003.review.json" in output
 
 
 def test_run_five_command_calls_longform_workflow(
@@ -74,11 +92,10 @@ def test_run_five_command_calls_longform_workflow(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "运行结束。" in output
-    assert "开始章节: 1" in output
-    assert "结束章节: 5" in output
-    assert "状态: completed" in output
-    assert "完成章节数: 5" in output
+    assert "started_from: 1" in output
+    assert "ended_at: 5" in output
+    assert "status: completed" in output
+    assert "completed_count: 5" in output
 
 
 def test_run_five_command_prints_failed_result_clearly(
@@ -94,7 +111,32 @@ def test_run_five_command_prints_failed_result_clearly(
             "completed_chapters": [2],
             "failed_chapter": 3,
             "status": "failed",
-            "per_chapter_results": [],
+            "per_chapter_results": [
+                {
+                    "chapter_no": 3,
+                    "status": "failed",
+                    "failure_stage": "consistency_check",
+                    "artifacts": {
+                        "suggestion_path": "D:/tmp/novel/suggestions/ch003.suggestion.json",
+                        "review_path": "D:/tmp/novel/reviews/ch003.review.json",
+                        "snapshot_path": "D:/tmp/novel/snapshots/ch003.snapshot.json",
+                    },
+                    "error": "consistency blocked",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        phase2_cli,
+        "build_project_status_report",
+        lambda project_root: {
+            "last_failure_stage": "consistency_check",
+            "checkpoint_path": "D:/tmp/novel/checkpoints/ch003.checkpoint.json",
+            "review_path": "D:/tmp/novel/reviews/ch003.review.json",
+            "suggestion_path": "D:/tmp/novel/suggestions/ch003.suggestion.json",
+            "snapshot_path": "D:/tmp/novel/snapshots/ch003.snapshot.json",
+            "unresolved_snapshot_exists": True,
+            "stale_snapshot_exists": False,
         },
     )
 
@@ -102,8 +144,12 @@ def test_run_five_command_prints_failed_result_clearly(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "状态: failed" in output
-    assert "失败章节: 3" in output
+    assert "status: failed" in output
+    assert "failed_chapter: 3" in output
+    assert "failure_stage: consistency_check" in output
+    assert "next_check: checkpoint" in output
+    assert "checkpoint_path: D:/tmp/novel/checkpoints/ch003.checkpoint.json" in output
+    assert "snapshot_path: D:/tmp/novel/snapshots/ch003.snapshot.json" in output
 
 
 def test_workflow_error_returns_non_zero(
@@ -120,4 +166,4 @@ def test_workflow_error_returns_non_zero(
 
     output = capsys.readouterr().out
     assert exit_code == 1
-    assert "运行失败: loop state missing" in output
+    assert "loop state missing" in output

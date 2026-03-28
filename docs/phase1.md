@@ -2,30 +2,31 @@
 
 ## 目标
 
-Phase 1 负责把一个小说项目从“空目录”推进到“已完成规划、可写单章、可提交状态建议”的最小闭环。
+Phase 1 负责把一个小说项目从空目录推进到：
 
-它不负责连续多章自动推进；那部分由 Phase 2 处理。
+- 已完成项目初始化
+- 已完成规划
+- 可写单章
+- 可通过显式 `review -> consistency_check -> commit` 链路提交 structured state
 
-## 当前能力
+Phase 1 不负责连续跑到第 5 章；那部分由 Phase 2 负责。
 
-- 创建项目目录与基础状态文件
-- 生成总纲、分卷规划、章节规划
-- 按指定章节生成初稿、改写稿、摘要、状态建议
-- 将状态建议提交到正式故事状态文件
+## 当前主入口
 
-核心入口都在 `core/workflow_service.py`：
+推荐入口：
 
-- `create_project(project_root, title, topic, style, target)`
-- `plan_novel(project_root)`
-- `write_chapter(project_root, chapter_no)`
-- `commit_suggestion(project_root, chapter_no)`
+- `phase1_cli.py`
 
-## CLI 命令
+兼容但不推荐：
+
+- `app.py`
+
+## 当前命令
 
 ### 创建项目
 
 ```bash
-python phase1_cli.py create-project --root <project_root> --title <title> --topic <topic> --style <style> --target <target>
+python phase1_cli.py create-project --root "<project_root>" --title "<title>" --topic "<topic>" --style "<style>" --target "<target>"
 ```
 
 典型输出：
@@ -41,7 +42,7 @@ python phase1_cli.py create-project --root <project_root> --title <title> --topi
 ### 生成规划
 
 ```bash
-python phase1_cli.py plan-novel --root <project_root>
+python phase1_cli.py plan-novel --root "<project_root>"
 ```
 
 典型输出：
@@ -54,7 +55,7 @@ python phase1_cli.py plan-novel --root <project_root>
 ### 写单章
 
 ```bash
-python phase1_cli.py write-chapter --root <project_root> --chapter 1
+python phase1_cli.py write-chapter --root "<project_root>" --chapter 1
 ```
 
 典型输出：
@@ -64,48 +65,95 @@ python phase1_cli.py write-chapter --root <project_root> --chapter 1
 - `docs/ch001.summary.md`
 - `suggestions/ch001.suggestion.json`
 
-### 提交状态建议
+### 提交 suggestion
 
 ```bash
-python phase1_cli.py commit-suggestion --root <project_root> --chapter 1
+python phase1_cli.py commit-suggestion --root "<project_root>" --chapter 1
 ```
 
-典型更新：
+当前真实链路不是“直接 suggestion 覆盖正式状态”，而是：
+
+`suggestion -> review -> consistency_check -> snapshot -> commit`
+
+提交成功后会更新：
 
 - `characters.json`
 - `timeline.json`
 - `foreshadow.json`
-- `suggestions/ch001.suggestion.json` 会写入 `committed: true`
+- `suggestions/ch001.suggestion.json`
+- `reviews/ch001.review.json`
+
+CLI 还会输出：
+
+- `review_path`
+- `snapshot_path`
+- `artifact_relation_status`
+
+说明：
+
+- 成功提交后，snapshot 会被清理掉，所以 `snapshot_path` 可能只是 canonical path，不代表文件仍存在
+- 如果提交失败，review 会保留，snapshot 也可能保留或被标记为 restored，供后续排障或 rerun 使用
+
+## 当前主链能力
+
+### Context Assembler
+
+`write-chapter` 使用显式 context assembler，而不是把上下文逻辑继续埋在 `workflow_service` 里。
+
+### Review Artifact
+
+`commit-suggestion` 会先生成或刷新 `reviews/chXXX.review.json`，再从 review 的 `approved_suggestion` 做 commit。
+
+### Deterministic Consistency Check
+
+review 上会写入 `consistency_check`：
+
+- `blockers` 会阻止 commit
+- `warnings` 不阻止 commit，但会保留在 review 中
+
+### Recoverable Commit
+
+正式状态写入前会创建 `snapshots/chXXX.snapshot.json`：
+
+- formal write 或 marker write 失败时，会恢复 formal state
+- rerun 同章前会先尝试处理 unresolved snapshot
 
 ## 最小使用顺序
 
 ```bash
-python phase1_cli.py create-project --root "D:/AI novel/workspace/demo_novel" --title "Demo Novel" --topic "玄幻复仇" --style "冷峻、克制、偏网文节奏" --target "男频长篇"
+python phase1_cli.py create-project --root "D:/AI novel/workspace/demo_novel" --title "Demo Novel" --topic "玄幻复仇" --style "冷系、克制、偏网文章节节奏" --target "男频长篇"
 python phase1_cli.py plan-novel --root "D:/AI novel/workspace/demo_novel"
 python phase1_cli.py write-chapter --root "D:/AI novel/workspace/demo_novel" --chapter 1
 python phase1_cli.py commit-suggestion --root "D:/AI novel/workspace/demo_novel" --chapter 1
 ```
 
-## 与旧入口的关系
+## 推荐排障顺序
 
-- `phase1_cli.py` 是当前推荐的 Phase 1 入口
-- `app.py` 仍保留，但不建议作为当前主链路使用
+如果 `commit-suggestion` 失败，推荐按这个顺序看：
+
+1. 先看 CLI 输出里的 `failure_stage`
+2. 再看 `review_path`
+3. 如果 CLI 给出了 `snapshot_path`
+   - 再看 snapshot 是否存在、是 `pending` 还是 `restored`
+4. 最后看 `suggestion_path`
+
+排障目标通常是先判断：
+
+- 是不是 consistency blocker
+- 是不是 formal state write 中途失败
+- 是不是 snapshot cleanup 或 stale snapshot cleanup 失败
 
 ## 当前边界
 
-- 默认 CLI 不接入 review/checker 主流程
-- 不做人工逐条确认
-- 不做多章自动推进
-- 不做复杂冲突解决或回滚
+Phase 1 当前不做：
 
-## 建议测试
+- 连续 5 章自动推进
+- 人工 approve/reject review
+- LLM consistency checker 默认接入
+- 新 workflow 或额外 CLI
 
-```bash
-python -m pytest tests/test_phase1_e2e.py tests/test_phase2_commit_e2e.py
-```
+## 相关文档
 
-如果要补充回归：
-
-```bash
-python -m pytest tests/test_workflow_write_chapter.py tests/test_workflow_commit_suggestion.py tests/test_suggestion_service.py
-```
+- `README.md`
+- `docs/phase2_longform_usage.md`
+- `docs/phase2_longform_design.md`

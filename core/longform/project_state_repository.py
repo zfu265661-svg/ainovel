@@ -13,6 +13,7 @@ from core.longform.loop_state_service import (
 LOOP_STATE_FILE_NAME = "loop_state.json"
 CHECKPOINTS_DIR_NAME = "checkpoints"
 REVIEWS_DIR_NAME = "reviews"
+SNAPSHOTS_DIR_NAME = "snapshots"
 
 
 def get_longform_file_paths(project_root: str) -> dict[str, str]:
@@ -23,6 +24,7 @@ def get_longform_file_paths(project_root: str) -> dict[str, str]:
         "loop_state_json": str(root / LOOP_STATE_FILE_NAME),
         "checkpoints_dir": str(root / CHECKPOINTS_DIR_NAME),
         "reviews_dir": str(root / REVIEWS_DIR_NAME),
+        "snapshots_dir": str(root / SNAPSHOTS_DIR_NAME),
     }
 
 
@@ -82,6 +84,12 @@ def get_chapter_review_path(project_root: str, chapter_no: int) -> str:
     normalized_chapter_no = _normalize_chapter_no(chapter_no)
     paths = get_longform_file_paths(project_root)
     return str(Path(paths["reviews_dir"]) / f"ch{normalized_chapter_no:03d}.review.json")
+
+
+def get_chapter_snapshot_path(project_root: str, chapter_no: int) -> str:
+    normalized_chapter_no = _normalize_chapter_no(chapter_no)
+    paths = get_longform_file_paths(project_root)
+    return str(Path(paths["snapshots_dir"]) / f"ch{normalized_chapter_no:03d}.snapshot.json")
 
 
 def _normalize_chapter_no(chapter_no: int) -> int:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.longform.project_state_repository import get_chapter_review_path
 from core.storage import load_json, load_text
 from core.workflow_service import (
     commit_suggestion,
@@ -155,3 +156,9 @@ def test_phase1_full_creation_loop_with_commit_runs_end_to_end(
     suggestion = load_json(str(project_root / "suggestions" / "ch001.suggestion.json"))
     assert suggestion["committed"] is True
     assert suggestion["committed_chapter_no"] == 1
+    review = load_json(get_chapter_review_path(str(project_root), 1))
+    assert review["approved_suggestion"]["chapter_no"] == 1
+    assert review["consistency_check"]["blockers"] == []
+    assert review["consistency_check"]["warnings"] == []
+    assert review["committed"] is True
+    assert review["committed_chapter_no"] == 1

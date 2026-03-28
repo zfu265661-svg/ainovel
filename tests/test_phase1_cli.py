@@ -34,7 +34,6 @@ def test_create_project_command_runs_successfully(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "项目创建完成。" in output
     assert "D:/tmp/novel/project.json" in output
 
 
@@ -63,7 +62,6 @@ def test_plan_novel_command_runs_successfully(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "规划生成完成。" in output
     assert "D:/tmp/novel/docs/outline.md" in output
 
 
@@ -89,7 +87,6 @@ def test_write_chapter_command_runs_successfully(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "章节生成完成。" in output
     assert "D:/tmp/novel/docs/ch001.draft.md" in output
 
 
@@ -115,7 +112,7 @@ def test_workflow_error_returns_non_zero(
 
     output = capsys.readouterr().out
     assert exit_code == 1
-    assert "运行失败: disk full" in output
+    assert "disk full" in output
 
 
 def test_commit_suggestion_command_runs_successfully(
@@ -133,6 +130,17 @@ def test_commit_suggestion_command_runs_successfully(
             "foreshadow_updated": 1,
         },
     )
+    monkeypatch.setattr(
+        phase1_cli,
+        "build_chapter_diagnostic_report",
+        lambda project_root, chapter_no: {
+            "artifact_relation_status": "partial",
+            "review_path": f"{project_root}/reviews/ch001.review.json",
+            "suggestion_path": f"{project_root}/suggestions/ch001.suggestion.json",
+            "snapshot_path": f"{project_root}/snapshots/ch001.snapshot.json",
+            "failure_stage": None,
+        },
+    )
 
     exit_code = phase1_cli.main(
         ["commit-suggestion", "--root", "D:/tmp/novel", "--chapter", "1"]
@@ -140,5 +148,41 @@ def test_commit_suggestion_command_runs_successfully(
 
     output = capsys.readouterr().out
     assert exit_code == 0
-    assert "建议提交完成。" in output
     assert "D:/tmp/novel/characters.json" in output
+    assert "review_path: D:/tmp/novel/reviews/ch001.review.json" in output
+    assert "artifact_relation_status: partial" in output
+
+
+def test_commit_suggestion_command_prints_diagnostics_when_commit_fails(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase1_cli,
+        "commit_suggestion",
+        lambda project_root, chapter_no: (_ for _ in ()).throw(
+            RuntimeError("Failed during snapshot cleanup: stale snapshot cleanup blocked")
+        ),
+    )
+    monkeypatch.setattr(
+        phase1_cli,
+        "build_chapter_diagnostic_report",
+        lambda project_root, chapter_no: {
+            "artifact_relation_status": "partial",
+            "review_path": f"{project_root}/reviews/ch001.review.json",
+            "suggestion_path": f"{project_root}/suggestions/ch001.suggestion.json",
+            "snapshot_path": f"{project_root}/snapshots/ch001.snapshot.json",
+            "failure_stage": "snapshot_cleanup",
+        },
+    )
+
+    exit_code = phase1_cli.main(
+        ["commit-suggestion", "--root", "D:/tmp/novel", "--chapter", "1"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "failure_stage: snapshot_cleanup" in output
+    assert "review_path: D:/tmp/novel/reviews/ch001.review.json" in output
+    assert "snapshot_path: D:/tmp/novel/snapshots/ch001.snapshot.json" in output
+    assert "stale snapshot cleanup blocked" in output

@@ -1,227 +1,162 @@
-# 小说写作 Agent
+# AI Novel
 
-这是一个基于 Python 的小说写作 Agent 项目，当前已经打通两条可运行主链路：
+这是一个面向“项目驱动长篇小说写作”的 agent kernel，不是一次性章节生成器。
 
-- Phase 1：创建项目、生成总纲与章节规划、生成单章正文、提交状态建议
-- Phase 2：在已有 Phase 1 项目上，按 `loop_state` 连续推进到第 5 章
+当前仓库的默认主链已经稳定到 Stage 1~5，重点不是扩到 100 章，而是先把真实 5 章闭环跑稳、跑清楚、跑得可恢复。
 
-当前仓库的目标不是一次性解决几百章长篇自动化，而是先把“可规划、可写单章、可连续跑 5 章、可恢复”的最小闭环做稳定。
+## 当前主入口
 
-## 当前已实现能力
+推荐入口：
+
+- `phase1_cli.py`
+- `phase2_cli.py`
+
+兼容入口：
+
+- `app.py`
+
+`app.py` 仍然保留，但不再是推荐主入口。
+
+## 当前主链能力
 
 ### Phase 1
 
-- `create-project`：创建项目目录和最小状态文件
-- `plan-novel`：生成并落盘 `outline.md`、`volumes.md`、`chapters.json`、`chXXX.plan.md`
-- `write-chapter`：基于已有章节规划生成正文初稿、改写稿、摘要、状态建议
-- `commit-suggestion`：将某一章的 suggestion 提交到正式状态文件
+`phase1_cli.py` 提供：
+
+- `create-project`
+- `plan-novel`
+- `write-chapter`
+- `commit-suggestion`
+
+Phase 1 负责把项目推进到“可规划、可写单章、可显式提交状态”的最小闭环。
 
 ### Phase 2
 
-- `init-loop`：初始化 `loop_state.json`
-- `show-status`：查看连续写作流程状态
-- `run-five`：从当前 `next_chapter_no` 顺序运行到第 5 章或失败位置
+`phase2_cli.py` 提供：
 
-## 环境准备
+- `init-loop`
+- `show-status`
+- `run-five`
 
-推荐步骤：
+Phase 2 在 Phase 1 之上提供可恢复的顺序推进能力，当前目标固定为跑到第 5 章。
 
-```bash
-python -m venv .venv
-```
+## 当前默认工作流
 
-Windows PowerShell：
+当前主链已经显式化为：
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
+`plan -> draft -> rewrite -> summarize -> suggest -> review -> consistency_check -> commit`
 
-安装依赖：
+其中：
 
-```bash
-python -m pip install -r requirements.txt
-```
+- `commit_suggestion()` 仍是唯一公开提交入口
+- Phase 1 的 `commit-suggestion` 走这条链
+- Phase 2 的自动推进也走这条链
 
-当前依赖很少：
+## Stage 1~5 已落地能力
 
-- `python-dotenv`
-- `openai`
-- `pytest`
+### 1. Context Assembler
 
-## .env 配置说明
+- 章节上下文组装已从 `workflow_service` 中显式抽到 `chapter_context_service`
+- `chapter 1`、缺失 previous summary、timeline 截断、open foreshadow 过滤都有固定规则
 
-项目通过 `.env` 读取 OpenAI 兼容接口配置。最小必需项：
+### 2. Suggestion -> Review -> Commit
 
-```env
-OPENAI_API_KEY=your_api_key
-OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
-MODEL_NAME=your_model_name
-```
+- 两条主链都会先生成 canonical review artifact，再进入 commit
+- `reviews/chXXX.review.json` 记录 commit 的显式依据
+- Phase 2 仍然自动提交，不新增人工步骤
 
-如果你使用 DeepSeek，当前真实跑通配置示例是：
+### 3. Lightweight Deterministic Checks
 
-```env
-OPENAI_API_KEY=<your_deepseek_api_key>
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-MODEL_NAME=deepseek-chat
-```
+- review 上会写入 `consistency_check`
+- 默认主流程只接 cheap / deterministic checks
+- LLM checker 没有接入默认主链
 
-说明：
+### 4. Recoverable Commit
 
-- `OPENAI_BASE_URL` 应指向兼容接口的根地址
-- DeepSeek 建议显式使用 `/v1`
-- `MODEL_NAME` 需要与所用提供方的可用模型一致
+- formal state 提交前会创建 `snapshots/chXXX.snapshot.json`
+- 正式状态写入或 marker 写入中途失败时，会触发 restore
+- rerun 同章前会先处理 unresolved snapshot
+- stale snapshot 会被识别并清理；清理失败会显式报错
 
-## 快速开始
+### 5. Status / Diagnostics
 
-下面是一条从零开始的最小复现路径。
+- `show-status` 会聚合 `loop_state`、checkpoint、review、suggestion、snapshot
+- `run-five` 失败时会提示先看 checkpoint
+- Phase 1 的 `commit-suggestion` 成功/失败都会输出 review / snapshot 诊断线索
 
-### 1. 创建项目
+## 关键 artifact
 
-```bash
-python phase1_cli.py create-project --root "D:/AI novel/workspace/demo_novel" --title "Demo Novel" --topic "玄幻复仇" --style "冷峻、克制、偏网文节奏" --target "男频长篇"
-```
+主链运行时会涉及这些文件：
 
-### 2. 生成规划
+- `loop_state.json`
+  - 只表示流程状态，不承载正式故事状态
+- `suggestions/chXXX.suggestion.json`
+  - 原始 AI proposal
+- `reviews/chXXX.review.json`
+  - 显式 commit 依据，包含 `approved_suggestion` 和 `consistency_check`
+- `checkpoints/chXXX.checkpoint.json`
+  - 单章尝试结果、失败阶段、artifact 索引
+- `snapshots/chXXX.snapshot.json`
+  - formal commit 前的恢复快照；成功提交后会删除
+- `characters.json`
+- `timeline.json`
+- `foreshadow.json`
+  - 三个 canonical 正式状态文件
 
-```bash
-python phase1_cli.py plan-novel --root "D:/AI novel/workspace/demo_novel"
-```
+## 当前 show-status 会展示什么
 
-预期产物：
+`phase2_cli.py show-status` 当前会输出：
 
-- `docs/outline.md`
-- `docs/volumes.md`
-- `chapters.json`
-- `docs/ch001.plan.md` 等章节规划文件
+- 当前 workflow 状态
+- 当前写到哪一章
+- `loop_state` 视角的最近完成章
+- artifact scan 视角的最近成功提交章
+- 最近尝试的是哪一章、状态如何
+- 最近失败在哪个阶段
+- 是否存在 unresolved / stale snapshot
+- 当前 focus chapter 的 checkpoint / review / suggestion / snapshot 路径
+- `artifact_relation_status`
 
-### 3. 写第 1 章并提交状态
+## 推荐使用顺序
 
-```bash
-python phase1_cli.py write-chapter --root "D:/AI novel/workspace/demo_novel" --chapter 1
-python phase1_cli.py commit-suggestion --root "D:/AI novel/workspace/demo_novel" --chapter 1
-```
-
-### 4. 初始化 Phase 2 连续写作状态
-
-```bash
-python phase2_cli.py init-loop --root "D:/AI novel/workspace/demo_novel"
-```
-
-### 5. 运行到第 5 章
+最小闭环：
 
 ```bash
-python phase2_cli.py run-five --root "D:/AI novel/workspace/demo_novel"
+python phase1_cli.py create-project --root "<project_root>" --title "<title>" --topic "<topic>" --style "<style>" --target "<target>"
+python phase1_cli.py plan-novel --root "<project_root>"
+python phase2_cli.py init-loop --root "<project_root>"
+python phase2_cli.py show-status --root "<project_root>"
+python phase2_cli.py run-five --root "<project_root>"
 ```
 
-查看当前状态：
+如果只想单独验证一章：
 
 ```bash
-python phase2_cli.py show-status --root "D:/AI novel/workspace/demo_novel"
+python phase1_cli.py write-chapter --root "<project_root>" --chapter 1
+python phase1_cli.py commit-suggestion --root "<project_root>" --chapter 1
 ```
 
-## Phase 1 命令示例
+## 推荐排障顺序
+
+当 `run-five` 或 `commit-suggestion` 失败时，推荐按这个顺序看：
+
+1. 先看 `checkpoint`
+   - 优先确认 `failure_stage`、`error`、`artifacts`
+2. 如果有 `snapshot_path`，或 `show-status` 显示 unresolved / stale snapshot
+   - 再看 `snapshot`
+3. 再看 `review`
+   - 重点看 `committed`、`consistency_check`、`approved_suggestion`
+4. 最后看 `suggestion`
+   - 确认原始 proposal 和 review 是否对得上
+
+如果只是想快速判断现在能不能继续跑，先执行：
 
 ```bash
-python phase1_cli.py create-project --root <project_root> --title <title> --topic <topic> --style <style> --target <target>
-python phase1_cli.py plan-novel --root <project_root>
-python phase1_cli.py write-chapter --root <project_root> --chapter 1
-python phase1_cli.py commit-suggestion --root <project_root> --chapter 1
+python phase2_cli.py show-status --root "<project_root>"
 ```
 
-Phase 1 推荐阅读：
+## 相关文档
 
 - `docs/phase1.md`
-
-## Phase 2 命令示例
-
-```bash
-python phase2_cli.py init-loop --root <project_root>
-python phase2_cli.py show-status --root <project_root>
-python phase2_cli.py run-five --root <project_root>
-```
-
-Phase 2 推荐阅读：
-
 - `docs/phase2_longform_usage.md`
 - `docs/phase2_longform_design.md`
-
-## 目录结构
-
-仓库层级：
-
-```text
-AI novel/
-├─ core/                  # 核心服务与 workflow
-├─ docs/                  # 使用说明与设计文档
-├─ prompts/               # 提示词模板
-├─ tests/                 # pytest 测试
-├─ workspace/             # 本地小说项目示例或运行产物
-├─ app.py                 # 旧入口，保留
-├─ phase1_cli.py          # Phase 1 CLI
-├─ phase2_cli.py          # Phase 2 CLI
-├─ config.py              # 配置加载
-└─ README.md
-```
-
-单个小说项目目录大致如下：
-
-```text
-<project_root>/
-├─ project.json
-├─ chapters.json
-├─ characters.json
-├─ timeline.json
-├─ foreshadow.json
-├─ loop_state.json              # Phase 2 流程状态
-├─ docs/
-│  ├─ outline.md
-│  ├─ volumes.md
-│  ├─ ch001.plan.md
-│  ├─ ch001.draft.md
-│  ├─ ch001.rewrite.md
-│  └─ ch001.summary.md
-├─ suggestions/
-│  └─ ch001.suggestion.json
-├─ checkpoints/
-│  └─ ch001.checkpoint.json
-└─ reviews/                     # 预留目录，当前未接主流程
-```
-
-## 当前限制
-
-- `app.py` 仍保留，但不是当前推荐主入口
-- Phase 2 当前只实现固定 5 章 workflow，不支持通用无限循环
-- 未接入 `review_service`
-- 未实现复杂上下文检索或长期记忆系统
-- 连续写作恢复语义目前完全依赖 `loop_state.json`
-- 仍然依赖模型较稳定地返回 JSON；虽然已做最小兼容，但不是通用鲁棒解析框架
-
-## 建议测试命令
-
-Phase 1 最小回归：
-
-```bash
-python -m pytest tests/test_phase1_e2e.py tests/test_phase2_commit_e2e.py
-```
-
-Phase 2 最小回归：
-
-```bash
-python -m pytest tests/longform/test_phase2_cli.py tests/longform/test_serial_workflow_service.py tests/longform/test_chapter_runner_service.py tests/longform/test_loop_state_service.py tests/longform/test_project_state_repository.py
-```
-
-相关链路一起验证：
-
-```bash
-python -m pytest tests/test_workflow_write_chapter.py tests/test_workflow_commit_suggestion.py tests/test_suggestion_service.py tests/longform/test_phase2_cli.py tests/longform/test_serial_workflow_service.py tests/longform/test_chapter_runner_service.py
-```
-
-## 后续计划
-
-当前建议的后续方向是保守演进，而不是推翻现有链路：
-
-- 继续提高 Phase 2 在真实环境下的稳定性
-- 在不破坏旧主流程的前提下扩展更长的连续写作编排
-- 把 review 能力以旁路方式接入，而不是先改主链路
-- 逐步增强上下文压缩、状态更新和错误可观测性
