@@ -35,6 +35,9 @@ def test_create_project_command_runs_successfully(
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "D:/tmp/novel/project.json" in output
+    assert "D:/tmp/novel/story_bible.json" in output
+    assert "D:/tmp/novel/plot_threads.json" in output
+    assert "D:/tmp/novel/exports/" in output
 
 
 def test_plan_novel_command_runs_successfully(
