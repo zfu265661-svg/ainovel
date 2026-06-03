@@ -9,6 +9,7 @@ from core.longform.project_state_repository import (
     get_chapter_review_path,
     get_chapter_snapshot_path,
 )
+from core.longform.state_targets import get_formal_state_targets
 from core.project_service import (
     get_chapter_suggestion_path,
     get_project_file_paths,
@@ -147,11 +148,15 @@ def _load_snapshot(path: str, chapter_no: int) -> dict[str, Any]:
     if not isinstance(state_before, dict):
         raise ValueError("Snapshot field 'state_before' must be a JSON object.")
 
-    for key in ("characters", "timeline", "foreshadow"):
-        if key not in state_before:
-            raise ValueError(f"Snapshot state_before is missing required field: {key}")
-        if not isinstance(state_before[key], dict):
-            raise ValueError(f"Snapshot state_before.{key} must be a JSON object.")
+    for target in get_formal_state_targets():
+        if target.name not in state_before:
+            raise ValueError(
+                f"Snapshot state_before is missing required field: {target.name}"
+            )
+        if not isinstance(state_before[target.name], dict):
+            raise ValueError(
+                f"Snapshot state_before.{target.name} must be a JSON object."
+            )
 
     return data
 
@@ -196,16 +201,13 @@ def _restore_formal_state(project_root: str, snapshot: dict[str, Any]) -> list[s
     paths = get_project_file_paths(project_root)
     state_before = snapshot["state_before"]
 
-    targets = (
-        (paths["characters_json"], state_before["characters"], "characters restore failed"),
-        (paths["timeline_json"], state_before["timeline"], "timeline restore failed"),
-        (paths["foreshadow_json"], state_before["foreshadow"], "foreshadow restore failed"),
-    )
-    for path, payload, label in targets:
+    for target in get_formal_state_targets():
+        path = paths[target.path_key]
+        payload = state_before[target.name]
         try:
             save_json(path, deepcopy(payload))
         except Exception as exc:
-            errors.append(f"{label}: {exc}")
+            errors.append(f"{target.restore_error_label}: {exc}")
 
     return errors
 

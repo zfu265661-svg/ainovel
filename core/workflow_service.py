@@ -23,6 +23,11 @@ from core.longform.snapshot_service import (
     handle_preflight_snapshot,
     recover_failed_commit_with_snapshot,
 )
+from core.longform.state_targets import (
+    StateTarget,
+    get_formal_state_targets,
+    get_required_suggestion_update_fields,
+)
 from core.outline_service import generate_outline
 from core.project_service import (
     get_chapter_draft_path,
@@ -36,6 +41,7 @@ from core.project_service import (
 )
 from core.rewrite_service import rewrite_text
 from core.storage import load_json, load_text, save_json, save_text
+from core.story_bible_service import load_agent_state
 from core.suggestion_service import generate_state_suggestions
 from core.summarizer import summarize_previous_chapter
 from core.timeline_service import load_timeline
@@ -136,6 +142,7 @@ def write_chapter(project_root: str, chapter_no: int) -> dict[str, Any]:
     characters = _run_stage("character state load", lambda: _load_character_state(paths))
     timeline = _run_stage("timeline state load", lambda: _load_timeline_state(paths))
     foreshadow = _run_stage("foreshadow state load", lambda: _load_foreshadow_state(paths))
+    agent_state = _run_stage("agent state load", lambda: load_agent_state(project_root))
 
     context_bundle = _run_stage(
         "draft context assembly",
@@ -146,6 +153,13 @@ def write_chapter(project_root: str, chapter_no: int) -> dict[str, Any]:
             characters=characters,
             timeline=timeline,
             foreshadow=foreshadow,
+            chapter_plan=chapter_plan,
+            story_bible=cast(dict[str, Any], agent_state["story_bible"]),
+            plot_threads=agent_state["plot_threads"],
+            locations=agent_state["locations"],
+            organizations=agent_state["organizations"],
+            style_guide=cast(dict[str, Any], agent_state["style_guide"]),
+            scenes=agent_state["scenes"],
         ),
     )
     draft_text = _run_stage(
@@ -284,45 +298,30 @@ def _prepare_preloaded_suggestion_commit(
     chapter_no: int,
     suggestion_path: str,
 ) -> dict[str, Any]:
-    characters_payload, characters_state = _run_stage(
-        "character state load",
-        lambda: _load_state_payload_and_items(paths["characters_json"], "characters"),
-    )
-    timeline_payload, timeline_state = _run_stage(
-        "timeline state load",
-        lambda: _load_state_payload_and_items(paths["timeline_json"], "events"),
-    )
-    foreshadow_payload, foreshadow_state = _run_stage(
-        "foreshadow state load",
-        lambda: _load_state_payload_and_items(paths["foreshadow_json"], "items"),
-    )
+    state_before: dict[str, dict[str, Any]] = {}
+    state_after: dict[str, dict[str, Any]] = {}
 
-    updated_characters = _apply_character_updates(
-        characters_state,
-        cast(list[dict[str, Any]], suggestion["character_updates"]),
-    )
-    updated_timeline = _apply_timeline_updates(
-        timeline_state,
-        cast(list[dict[str, Any]], suggestion["timeline_updates"]),
-        chapter_no,
-    )
-    updated_foreshadow = _apply_foreshadow_updates(
-        foreshadow_state,
-        cast(list[dict[str, Any]], suggestion["foreshadow_updates"]),
-        chapter_no,
-    )
+    for target in get_formal_state_targets():
+        payload, items = _run_stage(
+            f"{target.name} state load",
+            lambda target=target: _load_state_payload_and_items(
+                paths[target.path_key],
+                target.item_key,
+            ),
+        )
+        state_before[target.name] = deepcopy(payload)
+        state_after[target.name] = {
+            target.item_key: _apply_registered_state_updates(
+                target=target,
+                items=items,
+                updates=cast(list[dict[str, Any]], suggestion[target.update_field]),
+                chapter_no=chapter_no,
+            )
+        }
 
     return {
-        "state_before": {
-            "characters": deepcopy(characters_payload),
-            "timeline": deepcopy(timeline_payload),
-            "foreshadow": deepcopy(foreshadow_payload),
-        },
-        "state_after": {
-            "characters": {"characters": updated_characters},
-            "timeline": {"events": updated_timeline},
-            "foreshadow": {"items": updated_foreshadow},
-        },
+        "state_before": state_before,
+        "state_after": state_after,
         "result": _build_commit_result_from_suggestion(
             suggestion=suggestion,
             chapter_no=chapter_no,
@@ -772,9 +771,7 @@ def _load_suggestion_for_commit(path: str, chapter_no: int) -> dict[str, Any]:
 def _validate_commit_suggestion(suggestion: dict[str, Any]) -> None:
     required_fields = (
         "chapter_no",
-        "character_updates",
-        "timeline_updates",
-        "foreshadow_updates",
+        *get_required_suggestion_update_fields(),
         "notes",
     )
     missing_fields = [field for field in required_fields if field not in suggestion]
@@ -782,9 +779,8 @@ def _validate_commit_suggestion(suggestion: dict[str, Any]) -> None:
         missing = ", ".join(missing_fields)
         raise ValueError(f"Suggestion is missing required field(s): {missing}")
 
-    _validate_commit_updates("character_updates", suggestion["character_updates"])
-    _validate_commit_updates("timeline_updates", suggestion["timeline_updates"])
-    _validate_commit_updates("foreshadow_updates", suggestion["foreshadow_updates"])
+    for field_name in get_required_suggestion_update_fields():
+        _validate_commit_updates(field_name, suggestion[field_name])
 
 
 def _validate_commit_updates(field_name: str, updates: Any) -> None:
@@ -812,31 +808,29 @@ def _build_commit_result_from_suggestion(
     chapter_no: int,
     suggestion_path: str,
 ) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "chapter_no": chapter_no,
         "suggestion_path": suggestion_path,
-        "characters_updated": len(cast(list[Any], suggestion["character_updates"])),
-        "timeline_updated": len(cast(list[Any], suggestion["timeline_updates"])),
-        "foreshadow_updated": len(cast(list[Any], suggestion["foreshadow_updates"])),
     }
+    for target in get_formal_state_targets():
+        result[target.result_count_key] = len(
+            cast(list[Any], suggestion[target.update_field])
+        )
+    return result
 
 
 def _persist_prepared_formal_state(
     paths: dict[str, str],
     state_after: dict[str, dict[str, Any]],
 ) -> None:
-    _run_stage(
-        "character state persistence",
-        lambda: save_json(paths["characters_json"], state_after["characters"]),
-    )
-    _run_stage(
-        "timeline state persistence",
-        lambda: save_json(paths["timeline_json"], state_after["timeline"]),
-    )
-    _run_stage(
-        "foreshadow state persistence",
-        lambda: save_json(paths["foreshadow_json"], state_after["foreshadow"]),
-    )
+    for target in get_formal_state_targets():
+        _run_stage(
+            f"{target.name} state persistence",
+            lambda target=target: save_json(
+                paths[target.path_key],
+                state_after[target.name],
+            ),
+        )
 
 
 def _load_state_payload_and_items(
@@ -864,6 +858,21 @@ def _load_state_container(path: str, key: str) -> list[dict[str, Any]]:
         raise ValueError(f"State file {path} must contain a '{key}' array of objects.")
 
     return cast(list[dict[str, Any]], items)
+
+
+def _apply_registered_state_updates(
+    target: StateTarget,
+    items: list[dict[str, Any]],
+    updates: list[dict[str, Any]],
+    chapter_no: int,
+) -> list[dict[str, Any]]:
+    if target.name == "characters":
+        return _apply_character_updates(items, updates)
+    if target.name == "timeline":
+        return _apply_timeline_updates(items, updates, chapter_no)
+    if target.name == "foreshadow":
+        return _apply_foreshadow_updates(items, updates, chapter_no)
+    raise ValueError(f"Unsupported formal state target: {target.name}")
 
 
 def _apply_character_updates(

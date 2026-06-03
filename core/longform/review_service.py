@@ -6,6 +6,7 @@ from typing import Any
 
 from core.longform.consistency_service import CONSISTENCY_CHECK_VERSION
 from core.longform.project_state_repository import get_chapter_review_path
+from core.longform.state_targets import get_required_suggestion_update_fields
 from core.project_service import get_chapter_suggestion_path
 from core.storage import load_json, save_json
 
@@ -23,9 +24,7 @@ REQUIRED_REVIEW_FIELDS: tuple[str, ...] = (
 )
 REQUIRED_SUGGESTION_FIELDS: tuple[str, ...] = (
     "chapter_no",
-    "character_updates",
-    "timeline_updates",
-    "foreshadow_updates",
+    *get_required_suggestion_update_fields(),
     "notes",
 )
 UPDATE_FIELDS: tuple[str, ...] = ("action", "target", "content")
@@ -153,9 +152,8 @@ def _validate_suggestion_payload(suggestion: dict[str, Any]) -> None:
     if not isinstance(suggestion["chapter_no"], int):
         raise ValueError("Suggestion field 'chapter_no' must be an integer.")
 
-    _validate_updates("character_updates", suggestion["character_updates"])
-    _validate_updates("timeline_updates", suggestion["timeline_updates"])
-    _validate_updates("foreshadow_updates", suggestion["foreshadow_updates"])
+    for field_name in get_required_suggestion_update_fields():
+        _validate_updates(field_name, suggestion[field_name])
 
 
 def _validate_updates(field_name: str, updates: Any) -> None:

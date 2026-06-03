@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from core.longform.project_state_repository import get_chapter_review_path
+from core.longform.state_targets import get_formal_state_targets
 from core.project_service import get_chapter_summary_path, get_project_file_paths
 from core.storage import load_json, save_json
 
@@ -56,18 +57,15 @@ def _build_consistency_check(
         existing_keys=_load_existing_timeline_keys(project_root),
     )
     _append_previous_summary_warning(warnings, project_root, chapter_no)
-    _append_duplicate_target_warning(
-        warnings=warnings,
-        updates=_get_update_list(approved_suggestion, "character_updates"),
-        field_name="character_updates",
-        code="duplicate_character_target",
-    )
-    _append_duplicate_target_warning(
-        warnings=warnings,
-        updates=_get_update_list(approved_suggestion, "foreshadow_updates"),
-        field_name="foreshadow_updates",
-        code="duplicate_foreshadow_target",
-    )
+    for target in get_formal_state_targets():
+        if target.duplicate_warning_code is None:
+            continue
+        _append_duplicate_target_warning(
+            warnings=warnings,
+            updates=_get_update_list(approved_suggestion, target.update_field),
+            field_name=target.update_field,
+            code=target.duplicate_warning_code,
+        )
 
     return {
         "version": CONSISTENCY_CHECK_VERSION,
@@ -95,7 +93,8 @@ def _append_blank_update_field_blockers(
     blockers: list[dict[str, str]],
     approved_suggestion: dict[str, Any],
 ) -> None:
-    for field_name in ("character_updates", "timeline_updates", "foreshadow_updates"):
+    for target in get_formal_state_targets():
+        field_name = target.update_field
         updates = _get_update_list(approved_suggestion, field_name)
         for index, update in enumerate(updates):
             if not isinstance(update, dict):

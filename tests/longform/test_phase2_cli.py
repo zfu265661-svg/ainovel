@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import phase2_cli
+from core.longform.project_state_repository import initialize_loop_state
+from core.storage import save_json
 
 
 def test_init_loop_command_runs_successfully(
@@ -47,6 +51,20 @@ def test_show_status_command_prints_status_report(
             "last_attempt_status": "ready",
             "last_failure_stage": None,
             "last_error": None,
+            "formal_state_health": "missing_optional",
+            "formal_state_missing_files": ["story_bible.json"],
+            "formal_state_required_missing_files": [],
+            "formal_state_corrupt_files": [],
+            "formal_state_corrupt_file_errors": {},
+            "narrative_state_machine": {
+                "formal_state": {
+                    "targets": ["characters", "timeline", "foreshadow"],
+                    "health": "missing_optional",
+                },
+                "commit_boundary": {"enhanced_state_committed": False},
+            },
+            "can_continue": True,
+            "next_action": "continue_from_chapter:3",
             "unresolved_snapshot_exists": False,
             "unresolved_snapshot_chapters": [],
             "stale_snapshot_exists": False,
@@ -67,8 +85,164 @@ def test_show_status_command_prints_status_report(
     assert "workflow_status: ready" in output
     assert "next_chapter_no: 3" in output
     assert "last_successfully_committed_chapter_no: 2" in output
+    assert "formal_state_health: missing_optional" in output
+    assert "formal_state_missing_files: [story_bible.json]" in output
+    assert "formal_state_corrupt_file_errors: {}" in output
+    assert "narrative_state_machine:" in output
+    assert "can_continue: True" in output
+    assert "next_action: continue_from_chapter:3" in output
     assert "artifact_relation_status: partial" in output
     assert "review_path: D:/tmp/novel/reviews/ch003.review.json" in output
+
+
+def test_show_status_command_supports_legacy_project_without_phase3_state(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    project_root = tmp_path / "legacy-cli-project"
+    project_root.mkdir()
+    save_json(
+        str(project_root / "project.json"),
+        {
+            "project_id": "legacy-cli-project",
+            "title": "Legacy CLI Novel",
+            "topic": "xianxia",
+            "style": "cold",
+            "target": "serial",
+            "current_chapter_no": 1,
+            "status": "created",
+        },
+    )
+    save_json(str(project_root / "chapters.json"), {"chapters": []})
+    save_json(str(project_root / "characters.json"), {"characters": []})
+    save_json(str(project_root / "timeline.json"), {"events": []})
+    save_json(str(project_root / "foreshadow.json"), {"items": []})
+    initialize_loop_state(str(project_root), target_chapter_count=5)
+
+    exit_code = phase2_cli.main(["show-status", "--root", str(project_root)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "formal_state_health: missing_optional" in output
+    assert "can_continue: True" in output
+    assert "story_bible.json" in output
+
+
+def test_inspect_context_command_prints_report(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "build_context_inspection_report",
+        lambda project_root, chapter_no: {
+            "chapter_no": chapter_no,
+            "chapter": {"chapter_no": chapter_no, "title": "Chapter Three"},
+            "selected_context_counts": {"characters": 1, "locations": 1},
+            "selected_context_labels": {"characters": ["Lin Yue"], "locations": ["North Gate"]},
+            "context_audit": {"chapter_no": chapter_no, "selected": {"locations": []}},
+            "summary_chain": {"previous_summary": {"selected": True}},
+            "sources": {"outline_path": "D:/tmp/novel/docs/outline.md"},
+            "selected_context": {"characters": [{"name": "Lin Yue"}]},
+        },
+    )
+
+    exit_code = phase2_cli.main(
+        ["inspect-context", "--root", "D:/tmp/novel", "--chapter", "3"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Context inspection" in output
+    assert "chapter_no: 3" in output
+    assert "selected_context_counts:" in output
+    assert "context_audit:" in output
+
+
+def test_inspect_story_bible_command_prints_report(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "build_story_bible_inspection_report",
+        lambda project_root: {
+            "enhanced_state_health": "missing_optional",
+            "missing_optional_files": ["story_bible.json"],
+            "corrupt_optional_files": [],
+            "corrupt_file_errors": {},
+            "counts": {"plot_threads": 0},
+            "files": {},
+        },
+    )
+
+    exit_code = phase2_cli.main(["inspect-story-bible", "--root", "D:/tmp/novel"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Story Bible inspection" in output
+    assert "enhanced_state_health: missing_optional" in output
+    assert "missing_optional_files: [story_bible.json]" in output
+
+
+def test_inspect_plot_threads_command_prints_report(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "build_plot_threads_inspection_report",
+        lambda project_root: {
+            "path": "D:/tmp/novel/plot_threads.json",
+            "health": "healthy",
+            "missing_optional_files": [],
+            "corrupt_optional_files": [],
+            "corrupt_file_errors": {},
+            "total": 2,
+            "status_counts": {"active": 1, "resolved": 1},
+            "type_counts": {"main": 1, "subplot": 1},
+            "graph": {"graph_fields_present": False},
+        },
+    )
+
+    exit_code = phase2_cli.main(["inspect-plot-threads", "--root", "D:/tmp/novel"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Plot threads inspection" in output
+    assert "health: healthy" in output
+    assert "total: 2" in output
+
+
+def test_inspect_story_bible_command_supports_legacy_project_without_phase3_state(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    project_root = tmp_path / "legacy-inspect-cli-project"
+    project_root.mkdir()
+    save_json(
+        str(project_root / "project.json"),
+        {
+            "project_id": "legacy-inspect-cli-project",
+            "title": "Legacy CLI Novel",
+            "topic": "xianxia",
+            "style": "cold",
+            "target": "serial",
+            "current_chapter_no": 1,
+            "status": "created",
+        },
+    )
+    save_json(str(project_root / "chapters.json"), {"chapters": []})
+    save_json(str(project_root / "characters.json"), {"characters": []})
+    save_json(str(project_root / "timeline.json"), {"events": []})
+    save_json(str(project_root / "foreshadow.json"), {"items": []})
+
+    exit_code = phase2_cli.main(["inspect-story-bible", "--root", str(project_root)])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "enhanced_state_health: missing_optional" in output
+    assert "story_bible.json" in output
 
 
 def test_run_five_command_calls_longform_workflow(

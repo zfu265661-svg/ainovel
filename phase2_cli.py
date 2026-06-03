@@ -4,6 +4,11 @@ import argparse
 from typing import Any, Sequence
 
 from core.longform import initialize_loop_state, run_five_chapter_loop
+from core.longform.inspection_service import (
+    build_context_inspection_report,
+    build_plot_threads_inspection_report,
+    build_story_bible_inspection_report,
+)
 from core.longform.status_service import build_project_status_report
 
 
@@ -37,6 +42,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.add_argument("--root", required=True, help="Project root path.")
 
+    inspect_context_parser = subparsers.add_parser(
+        "inspect-context",
+        help="Inspect the selected context bundle for one chapter without writing.",
+    )
+    inspect_context_parser.add_argument("--root", required=True, help="Project root path.")
+    inspect_context_parser.add_argument(
+        "--chapter",
+        required=True,
+        type=int,
+        help="Chapter number to inspect.",
+    )
+
+    inspect_story_bible_parser = subparsers.add_parser(
+        "inspect-story-bible",
+        help="Inspect Story Bible and enhanced state health without writing.",
+    )
+    inspect_story_bible_parser.add_argument("--root", required=True, help="Project root path.")
+
+    inspect_plot_threads_parser = subparsers.add_parser(
+        "inspect-plot-threads",
+        help="Inspect plot thread status and graph-oriented fields without writing.",
+    )
+    inspect_plot_threads_parser.add_argument("--root", required=True, help="Project root path.")
+
     return parser
 
 
@@ -60,6 +89,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "show-status":
             result = build_project_status_report(args.root)
             _print_show_status_result(args.root, result)
+            return 0
+
+        if args.command == "inspect-context":
+            result = build_context_inspection_report(args.root, args.chapter)
+            _print_inspect_context_result(args.root, result)
+            return 0
+
+        if args.command == "inspect-story-bible":
+            result = build_story_bible_inspection_report(args.root)
+            _print_inspect_story_bible_result(args.root, result)
+            return 0
+
+        if args.command == "inspect-plot-threads":
+            result = build_plot_threads_inspection_report(args.root)
+            _print_inspect_plot_threads_result(args.root, result)
             return 0
 
         if args.command == "run-five":
@@ -100,6 +144,14 @@ def _print_show_status_result(project_root: str, result: dict[str, object]) -> N
         "last_attempt_status",
         "last_failure_stage",
         "last_error",
+        "formal_state_health",
+        "formal_state_missing_files",
+        "formal_state_required_missing_files",
+        "formal_state_corrupt_files",
+        "formal_state_corrupt_file_errors",
+        "narrative_state_machine",
+        "can_continue",
+        "next_action",
         "unresolved_snapshot_exists",
         "unresolved_snapshot_chapters",
         "stale_snapshot_exists",
@@ -110,6 +162,53 @@ def _print_show_status_result(project_root: str, result: dict[str, object]) -> N
         "review_path",
         "suggestion_path",
         "snapshot_path",
+    ):
+        print(f"{key}: {_render_value(result.get(key))}")
+
+
+def _print_inspect_context_result(project_root: str, result: dict[str, object]) -> None:
+    print("Context inspection")
+    print(f"project_root: {project_root}")
+    for key in (
+        "chapter_no",
+        "chapter",
+        "selected_context_counts",
+        "selected_context_labels",
+        "context_audit",
+        "summary_chain",
+        "sources",
+        "selected_context",
+    ):
+        print(f"{key}: {_render_value(result.get(key))}")
+
+
+def _print_inspect_story_bible_result(project_root: str, result: dict[str, object]) -> None:
+    print("Story Bible inspection")
+    print(f"project_root: {project_root}")
+    for key in (
+        "enhanced_state_health",
+        "missing_optional_files",
+        "corrupt_optional_files",
+        "corrupt_file_errors",
+        "counts",
+        "files",
+    ):
+        print(f"{key}: {_render_value(result.get(key))}")
+
+
+def _print_inspect_plot_threads_result(project_root: str, result: dict[str, object]) -> None:
+    print("Plot threads inspection")
+    print(f"project_root: {project_root}")
+    for key in (
+        "path",
+        "health",
+        "missing_optional_files",
+        "corrupt_optional_files",
+        "corrupt_file_errors",
+        "total",
+        "status_counts",
+        "type_counts",
+        "graph",
     ):
         print(f"{key}: {_render_value(result.get(key))}")
 

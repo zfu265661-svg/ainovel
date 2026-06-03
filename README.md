@@ -4,6 +4,13 @@
 
 当前仓库的默认主链已经稳定到 Stage 1~5，重点不是扩到 100 章，而是先把真实 5 章闭环跑稳、跑清楚、跑得可恢复。
 
+Phase 3 MVP 在这个基础上开始把项目壳升级为可演进的 Agent Kernel：
+
+- 新项目会创建 `story_bible.json`、`plot_threads.json`、`locations.json`、`organizations.json`、`style_guide.json`、`scenes.json`
+- 章节 context assembler 会读取这些增强状态，并写入 `context_audit`
+- `show-status` 会显示 formal state health、缺失/损坏文件、`can_continue` 和 `next_action`
+- review / commit / snapshot 仍然只提交当前受控的 `characters.json`、`timeline.json`、`foreshadow.json`
+
 ## 当前主入口
 
 推荐入口：
@@ -102,6 +109,13 @@ Phase 2 在 Phase 1 之上提供可恢复的顺序推进能力，当前目标固
 - `timeline.json`
 - `foreshadow.json`
   - 三个 canonical 正式状态文件
+- `story_bible.json`
+- `plot_threads.json`
+- `locations.json`
+- `organizations.json`
+- `style_guide.json`
+- `scenes.json`
+  - Phase 3 agent project state；当前进入 context assembly 和 status diagnostics，但不会被 LLM suggestion 直接提交
 
 ## 当前 show-status 会展示什么
 
@@ -116,6 +130,12 @@ Phase 2 在 Phase 1 之上提供可恢复的顺序推进能力，当前目标固
 - 是否存在 unresolved / stale snapshot
 - 当前 focus chapter 的 checkpoint / review / suggestion / snapshot 路径
 - `artifact_relation_status`
+- `formal_state_health`
+- `formal_state_missing_files`
+- `formal_state_required_missing_files`
+- `formal_state_corrupt_files`
+- `can_continue`
+- `next_action`
 
 ## 推荐使用顺序
 
@@ -160,3 +180,9 @@ python phase2_cli.py show-status --root "<project_root>"
 - `docs/phase1.md`
 - `docs/phase2_longform_usage.md`
 - `docs/phase2_longform_design.md`
+- `docs/architecture.md`
+- `docs/agent_design.md`
+- `docs/story_bible.md`
+- `docs/workflow.md`
+- `docs/recoverability.md`
+- `docs/cli_usage.md`

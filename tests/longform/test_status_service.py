@@ -76,6 +76,21 @@ def test_build_project_status_report_scans_committed_artifacts_and_latest_failur
     assert report["last_attempted_chapter_no"] == 2
     assert report["last_attempt_status"] == "failed"
     assert report["last_failure_stage"] == "consistency_check"
+    assert report["formal_state_health"] == "healthy"
+    assert report["formal_state_missing_files"] == []
+    assert report["formal_state_required_missing_files"] == []
+    assert report["formal_state_corrupt_files"] == []
+    assert report["formal_state_corrupt_file_errors"] == {}
+    assert report["narrative_state_machine"]["formal_state"] == {
+        "targets": ["characters", "timeline", "foreshadow"],
+        "health": "healthy",
+    }
+    assert report["narrative_state_machine"]["enhanced_state"]["counts"]["plot_threads"] == 0
+    assert report["narrative_state_machine"]["commit_boundary"] == {
+        "enhanced_state_committed": False
+    }
+    assert report["can_continue"] is True
+    assert report["next_action"] == "inspect_checkpoint_then_rerun"
     assert report["artifact_focus_chapter_no"] == 2
     assert report["artifact_relation_status"] == "partial"
     assert report["checkpoint_path"] == get_chapter_checkpoint_path(str(project_root), 2)
@@ -118,6 +133,118 @@ def test_build_project_status_report_falls_back_to_loop_state_when_commit_scan_i
     assert report["last_successfully_committed_source"] == "loop_state_fallback"
     assert report["commit_scan_status"] == "unknown"
     assert report["commit_loop_drift"] is True
+
+
+def test_build_project_status_report_reports_missing_optional_agent_state(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "status-project"
+    create_project_structure(
+        str(project_root),
+        title="Status Novel",
+        topic="xianxia",
+        style="cold",
+        target="serial",
+    )
+    initialize_loop_state(str(project_root), target_chapter_count=5)
+    (project_root / "story_bible.json").unlink()
+
+    report = build_project_status_report(str(project_root))
+
+    assert report["formal_state_health"] == "missing_optional"
+    assert report["formal_state_missing_files"] == ["story_bible.json"]
+    assert report["formal_state_required_missing_files"] == []
+    assert report["formal_state_corrupt_files"] == []
+    assert report["formal_state_corrupt_file_errors"] == {}
+    assert report["narrative_state_machine"]["enhanced_state"]["missing_optional"] == [
+        "story_bible.json"
+    ]
+    assert report["narrative_state_machine"]["commit_boundary"]["enhanced_state_committed"] is False
+    assert report["can_continue"] is True
+    assert report["next_action"] == "continue_from_chapter:1"
+
+
+def test_build_project_status_report_blocks_on_corrupt_agent_state(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "status-project"
+    create_project_structure(
+        str(project_root),
+        title="Status Novel",
+        topic="xianxia",
+        style="cold",
+        target="serial",
+    )
+    initialize_loop_state(str(project_root), target_chapter_count=5)
+    save_text(str(project_root / "locations.json"), "{broken json")
+
+    report = build_project_status_report(str(project_root))
+
+    assert report["formal_state_health"] == "corrupt"
+    assert report["formal_state_corrupt_files"] == ["locations.json"]
+    assert "Failed to parse JSON file" in report["formal_state_corrupt_file_errors"]["locations.json"]
+    assert report["narrative_state_machine"]["enhanced_state"]["corrupt_optional"] == [
+        "locations.json"
+    ]
+    assert report["narrative_state_machine"]["enhanced_state"]["counts"]["locations"] == 0
+    assert report["can_continue"] is False
+    assert report["next_action"] == "inspect_formal_state:locations.json"
+
+
+def test_build_project_status_report_allows_legacy_project_without_phase3_state(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "legacy-status-project"
+    project_root.mkdir()
+    save_json(
+        str(project_root / "project.json"),
+        {
+            "project_id": "legacy-status-project",
+            "title": "Legacy Novel",
+            "topic": "xianxia",
+            "style": "cold",
+            "target": "serial",
+            "current_chapter_no": 1,
+            "status": "created",
+        },
+    )
+    save_json(str(project_root / "chapters.json"), {"chapters": []})
+    save_json(str(project_root / "characters.json"), {"characters": []})
+    save_json(str(project_root / "timeline.json"), {"events": []})
+    save_json(str(project_root / "foreshadow.json"), {"items": []})
+    initialize_loop_state(str(project_root), target_chapter_count=5)
+
+    report = build_project_status_report(str(project_root))
+
+    assert report["formal_state_health"] == "missing_optional"
+    assert report["formal_state_required_missing_files"] == []
+    assert report["formal_state_corrupt_files"] == []
+    assert report["can_continue"] is True
+    assert report["next_action"] == "continue_from_chapter:1"
+    assert report["formal_state_missing_files"] == [
+        "story_bible.json",
+        "plot_threads.json",
+        "locations.json",
+        "organizations.json",
+        "style_guide.json",
+        "scenes.json",
+    ]
+    assert report["narrative_state_machine"]["enhanced_state"]["missing_optional"] == [
+        "story_bible.json",
+        "plot_threads.json",
+        "locations.json",
+        "organizations.json",
+        "style_guide.json",
+        "scenes.json",
+    ]
+    assert report["narrative_state_machine"]["enhanced_state"]["counts"] == {
+        "story_bible": 0,
+        "plot_threads": 0,
+        "locations": 0,
+        "organizations": 0,
+        "style_guide": 0,
+        "scenes": 0,
+    }
 
 
 def test_build_project_status_report_detects_unresolved_and_stale_snapshots(

@@ -9,6 +9,12 @@ The current objective is Phase 2 stabilization after a real 5-chapter run:
 - make state transitions explicit and auditable
 - improve context assembly, review/commit flow, lightweight consistency checks, and recoverability
 
+Phase 3 MVP has begun evolving this into a fuller Agent Kernel:
+- new projects include Story Bible, plot threads, locations, organizations, style guide, scenes, and exports state
+- enhanced state is read by context assembly and status diagnostics
+- formal state commits are still restricted to the registered targets: characters, timeline, foreshadow
+- future state files must not be silently overwritten by LLM output without review/commit support
+
 ## Current project shape
 Important paths:
 - `app.py`: current CLI entry
@@ -41,6 +47,8 @@ Priority order for the next phase:
 3. lightweight `consistency checks`
 4. `checkpoint / rollback`
 5. clearer `status / reporting / diagnostics`
+
+For Phase 3 work, preserve this order while extending context/status/docs first. Do not treat scene writing, vector search, or multi-agent execution as default-path requirements.
 
 Do not prioritize:
 - 100+ chapter automation

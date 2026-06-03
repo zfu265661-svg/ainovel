@@ -11,7 +11,8 @@ from core.longform.project_state_repository import (
     get_longform_file_paths,
     load_project_loop_state,
 )
-from core.project_service import get_chapter_suggestion_path
+from core.longform.state_targets import get_formal_state_targets
+from core.project_service import get_chapter_suggestion_path, get_project_file_paths
 from core.storage import load_json
 
 
@@ -24,6 +25,7 @@ _FAILURE_STAGE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Failed during review consistency check", "consistency_check"),
     ("Failed during review load", "review_load"),
     ("Failed during snapshot persistence", "formal_state_write"),
+    ("Failed during characters state persistence", "formal_state_write"),
     ("Failed during character state persistence", "formal_state_write"),
     ("Failed during timeline state persistence", "formal_state_write"),
     ("Failed during foreshadow state persistence", "formal_state_write"),
@@ -32,10 +34,39 @@ _FAILURE_STAGE_PATTERNS: tuple[tuple[str, str], ...] = (
     ("Failed during snapshot cleanup", "snapshot_cleanup"),
     ("Failed during stale snapshot cleanup", "snapshot_cleanup"),
 )
+_FORMAL_STATE_FILE_KEYS: tuple[str, ...] = (
+    "project_json",
+    "chapters_json",
+    "characters_json",
+    "timeline_json",
+    "foreshadow_json",
+    "story_bible_json",
+    "plot_threads_json",
+    "locations_json",
+    "organizations_json",
+    "style_guide_json",
+    "scenes_json",
+)
+_REQUIRED_FORMAL_STATE_FILE_KEYS: tuple[str, ...] = (
+    "project_json",
+    "chapters_json",
+    "characters_json",
+    "timeline_json",
+    "foreshadow_json",
+)
+_ENHANCED_STATE_FILES: tuple[tuple[str, str, str | None], ...] = (
+    ("story_bible", "story_bible_json", None),
+    ("plot_threads", "plot_threads_json", "threads"),
+    ("locations", "locations_json", "locations"),
+    ("organizations", "organizations_json", "organizations"),
+    ("style_guide", "style_guide_json", None),
+    ("scenes", "scenes_json", "scenes"),
+)
 
 
 def build_project_status_report(project_root: str) -> dict[str, Any]:
     loop_state = load_project_loop_state(project_root)
+    formal_state_health = _scan_formal_state_health(project_root)
     latest_checkpoint = _load_latest_checkpoint(project_root)
     committed_scan = _scan_last_successfully_committed(project_root)
     unresolved_snapshots, stale_snapshots = _scan_snapshot_health(project_root)
@@ -95,6 +126,14 @@ def build_project_status_report(project_root: str) -> dict[str, Any]:
         if isinstance(checkpoint_payload, dict)
         else ("unknown" if last_attempted_chapter_no is not None else None)
     )
+    can_continue = _can_continue(formal_state_health)
+    next_action = _derive_next_action(
+        loop_state=loop_state,
+        formal_state_health=formal_state_health,
+        unresolved_snapshots=unresolved_snapshots,
+        stale_snapshots=stale_snapshots,
+        last_attempt_status=last_attempt_status,
+    )
 
     return {
         "project_root": project_root,
@@ -112,6 +151,17 @@ def build_project_status_report(project_root: str) -> dict[str, Any]:
         "last_attempt_status": last_attempt_status,
         "last_failure_stage": last_failure_stage,
         "last_error": last_error,
+        "formal_state_health": formal_state_health["health"],
+        "formal_state_missing_files": formal_state_health["missing_files"],
+        "formal_state_required_missing_files": formal_state_health["required_missing_files"],
+        "formal_state_corrupt_files": formal_state_health["corrupt_files"],
+        "formal_state_corrupt_file_errors": formal_state_health["corrupt_file_errors"],
+        "narrative_state_machine": _build_narrative_state_machine_overview(
+            project_root,
+            formal_state_health,
+        ),
+        "can_continue": can_continue,
+        "next_action": next_action,
         "unresolved_snapshot_exists": bool(unresolved_snapshots),
         "unresolved_snapshot_chapters": unresolved_snapshots,
         "stale_snapshot_exists": bool(stale_snapshots),
@@ -123,6 +173,182 @@ def build_project_status_report(project_root: str) -> dict[str, Any]:
         "suggestion_path": chapter_diagnostics["suggestion_path"],
         "snapshot_path": chapter_diagnostics["snapshot_path"],
     }
+
+
+def _build_narrative_state_machine_overview(
+    project_root: str,
+    formal_state_health: dict[str, Any],
+) -> dict[str, Any]:
+    project_paths = get_project_file_paths(project_root)
+    longform_paths = get_longform_file_paths(project_root)
+    missing_files = set(formal_state_health["missing_files"])
+    corrupt_files = set(formal_state_health["corrupt_files"])
+
+    enhanced_counts: dict[str, int] = {}
+    for state_name, path_key, item_key in _ENHANCED_STATE_FILES:
+        path = project_paths[path_key]
+        enhanced_counts[state_name] = _count_state_items(path, item_key)
+
+    checkpoints_dir = Path(longform_paths["checkpoints_dir"])
+    reviews_dir = Path(longform_paths["reviews_dir"])
+    snapshots_dir = Path(longform_paths["snapshots_dir"])
+    suggestions_dir = Path(project_paths["suggestions_dir"])
+    docs_dir = Path(project_paths["docs_dir"])
+
+    return {
+        "formal_state": {
+            "targets": [target.name for target in get_formal_state_targets()],
+            "health": formal_state_health["health"],
+        },
+        "enhanced_state": {
+            "missing_optional": [
+                Path(project_paths[path_key]).name
+                for _state_name, path_key, _item_key in _ENHANCED_STATE_FILES
+                if Path(project_paths[path_key]).name in missing_files
+            ],
+            "corrupt_optional": [
+                Path(project_paths[path_key]).name
+                for _state_name, path_key, _item_key in _ENHANCED_STATE_FILES
+                if Path(project_paths[path_key]).name in corrupt_files
+            ],
+            "counts": enhanced_counts,
+        },
+        "process_artifacts": {
+            "has_checkpoints": _directory_has_files(checkpoints_dir, "*.checkpoint.json"),
+            "has_reviews": _directory_has_files(reviews_dir, "*.review.json"),
+            "has_snapshots": _directory_has_files(snapshots_dir, "*.snapshot.json"),
+            "has_suggestions": _directory_has_files(suggestions_dir, "*.suggestion.json"),
+        },
+        "derived_artifacts": {
+            "has_chapter_summaries": _directory_has_files(docs_dir, "*.summary.md"),
+            "chapter_summary_count": _count_files(docs_dir, "*.summary.md"),
+            "context_audit_available": True,
+        },
+        "commit_boundary": {
+            "enhanced_state_committed": False,
+        },
+    }
+
+
+def _count_state_items(path: str, item_key: str | None) -> int:
+    file_path = Path(path)
+    if not file_path.is_file():
+        return 0
+
+    try:
+        data = load_json(str(file_path))
+    except Exception:
+        return 0
+
+    if not isinstance(data, dict):
+        return 0
+
+    if item_key is None:
+        return len([key for key, value in data.items() if _has_content(value)])
+
+    items = data.get(item_key)
+    return len(items) if isinstance(items, list) else 0
+
+
+def _has_content(value: Any) -> bool:
+    if value in ("", None):
+        return False
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def _directory_has_files(directory: Path, pattern: str) -> bool:
+    return _count_files(directory, pattern) > 0
+
+
+def _count_files(directory: Path, pattern: str) -> int:
+    if not directory.is_dir():
+        return 0
+    return sum(1 for _path in directory.glob(pattern))
+
+
+def _scan_formal_state_health(project_root: str) -> dict[str, Any]:
+    paths = get_project_file_paths(project_root)
+    missing_files: list[str] = []
+    corrupt_files: list[str] = []
+    corrupt_file_errors: dict[str, str] = {}
+    required_missing_files: list[str] = []
+
+    for key in _FORMAL_STATE_FILE_KEYS:
+        path = Path(paths[key])
+        if not path.is_file():
+            missing_files.append(path.name)
+            if key in _REQUIRED_FORMAL_STATE_FILE_KEYS:
+                required_missing_files.append(path.name)
+            continue
+
+        try:
+            data = load_json(str(path))
+        except Exception as exc:
+            corrupt_files.append(path.name)
+            corrupt_file_errors[path.name] = str(exc)
+            continue
+
+        if not isinstance(data, dict):
+            corrupt_files.append(path.name)
+            corrupt_file_errors[path.name] = (
+                f"Formal state file must contain a JSON object: {path}"
+            )
+
+    if corrupt_files:
+        health = "corrupt"
+    elif required_missing_files:
+        health = "missing_required"
+    elif missing_files:
+        health = "missing_optional"
+    else:
+        health = "healthy"
+
+    return {
+        "health": health,
+        "missing_files": missing_files,
+        "required_missing_files": required_missing_files,
+        "corrupt_files": corrupt_files,
+        "corrupt_file_errors": corrupt_file_errors,
+    }
+
+
+def _can_continue(formal_state_health: dict[str, Any]) -> bool:
+    return (
+        not formal_state_health["required_missing_files"]
+        and not formal_state_health["corrupt_files"]
+    )
+
+
+def _derive_next_action(
+    loop_state: dict[str, Any],
+    formal_state_health: dict[str, Any],
+    unresolved_snapshots: list[int],
+    stale_snapshots: list[int],
+    last_attempt_status: Any,
+) -> str:
+    corrupt_files = formal_state_health["corrupt_files"]
+    if corrupt_files:
+        return f"inspect_formal_state:{corrupt_files[0]}"
+
+    required_missing_files = formal_state_health["required_missing_files"]
+    if required_missing_files:
+        return f"restore_required_state:{required_missing_files[0]}"
+
+    if unresolved_snapshots:
+        return f"rerun_commit_or_loop_to_restore_snapshot:chapter_{unresolved_snapshots[0]}"
+
+    if stale_snapshots:
+        return f"rerun_commit_or_loop_to_cleanup_snapshot:chapter_{stale_snapshots[0]}"
+
+    if last_attempt_status == "failed":
+        return "inspect_checkpoint_then_rerun"
+
+    if loop_state["status"] == "completed":
+        return "export_or_inspect_project"
+
+    return f"continue_from_chapter:{loop_state['next_chapter_no']}"
 
 
 def build_chapter_diagnostic_report(
