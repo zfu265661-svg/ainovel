@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
+
+from core.errors import parse_json_file_text
 
 
 JsonData = dict[str, Any] | list[Any]
@@ -13,14 +14,14 @@ def load_json(path: str) -> JsonData:
     """Load JSON data from a UTF-8 encoded file."""
     file_path = Path(path)
     try:
-        content = file_path.read_text(encoding="utf-8")
+        content = file_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"JSON file not found: {file_path}") from exc
 
     try:
-        data: Any = json.loads(content)
-    except JSONDecodeError as exc:
-        raise ValueError(f"Failed to parse JSON file {file_path}: {exc.msg}") from exc
+        data: Any = parse_json_file_text(content)
+    except ValueError as exc:
+        raise ValueError(f"Failed to parse JSON file {file_path}: {exc}") from exc
 
     if not isinstance(data, (dict, list)):
         raise ValueError(f"JSON file must contain an object or array: {file_path}")

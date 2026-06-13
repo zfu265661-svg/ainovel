@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from core.chapter_service import ChapterServiceError
 from core.checker_service import ConsistencyCheckParseError
 from core.draft_service import DraftServiceError
@@ -15,6 +17,7 @@ from core.errors import OutlineGenerationError
 from core.errors import PromptLoadError
 from core.errors import RewriteError
 from core.errors import StorageError
+from core.errors import parse_json_with_repair
 from core.llm_client import LLMClientError
 from core.outline_service import OutlineParseError
 from core.rewrite_service import RewriteServiceError
@@ -63,3 +66,47 @@ def test_service_errors_inherit_from_shared_error_hierarchy() -> None:
     assert issubclass(RewriteServiceError, RewriteError)
     assert issubclass(RewriteServiceError, ValueError)
     assert issubclass(WorkflowServiceError, NovelAgentError)
+
+
+def test_parse_json_with_repair_accepts_plain_json() -> None:
+    assert parse_json_with_repair('{"title": "Novel", "chapters": [1]}') == {
+        "title": "Novel",
+        "chapters": [1],
+    }
+
+
+def test_parse_json_with_repair_accepts_bom() -> None:
+    assert parse_json_with_repair('\ufeff{"title": "Novel"}') == {"title": "Novel"}
+
+
+def test_parse_json_with_repair_accepts_markdown_fence() -> None:
+    assert parse_json_with_repair('```json\n{"title": "Novel"}\n```') == {
+        "title": "Novel"
+    }
+
+
+def test_parse_json_with_repair_extracts_json_from_surrounding_text() -> None:
+    response = 'Here is the JSON:\n{"title": "Novel"}\nDone.'
+
+    assert parse_json_with_repair(response) == {"title": "Novel"}
+
+
+def test_parse_json_with_repair_removes_control_chars_inside_strings() -> None:
+    response = '{"title": "Broken\nTitle", "ok": true}'
+
+    assert parse_json_with_repair(response) == {
+        "title": "BrokenTitle",
+        "ok": True,
+    }
+
+
+def test_parse_json_with_repair_reports_attempts_without_response_body() -> None:
+    response = '{"title": "Broken"'
+
+    with pytest.raises(ValueError) as exc_info:
+        parse_json_with_repair(response)
+
+    message = str(exc_info.value)
+    assert "attempts=['strict', 'sanitized', 'extracted']" in message
+    assert "original_error=JSONDecodeError" in message
+    assert response not in message

@@ -69,6 +69,12 @@ def test_create_or_refresh_review_creates_review_from_canonical_suggestion(
             "foreshadow_updates": [],
             "notes": "first suggestion",
         },
+        "status": "pending",
+        "review_notes": [],
+        "reject_reason": "",
+        "approved_at": "",
+        "rejected_at": "",
+        "committed_at": "",
         "committed": False,
         "committed_chapter_no": None,
     }

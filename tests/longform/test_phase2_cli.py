@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import phase2_cli
 from core.longform.project_state_repository import initialize_loop_state
 from core.storage import save_json
@@ -47,6 +49,8 @@ def test_show_status_command_prints_status_report(
             "last_successfully_committed_source": "artifact_scan",
             "commit_scan_status": "exact",
             "commit_loop_drift": False,
+            "commit_loop_drift_explanation": "loop_state and committed artifact markers agree.",
+            "manual_commit_note": None,
             "last_attempted_chapter_no": 3,
             "last_attempt_status": "ready",
             "last_failure_stage": None,
@@ -71,6 +75,7 @@ def test_show_status_command_prints_status_report(
             "stale_snapshot_chapters": [],
             "artifact_focus_chapter_no": 3,
             "artifact_relation_status": "partial",
+            "artifact_relation_explanation": "some chapter artifacts are absent.",
             "checkpoint_path": "D:/tmp/novel/checkpoints/ch003.checkpoint.json",
             "review_path": "D:/tmp/novel/reviews/ch003.review.json",
             "suggestion_path": "D:/tmp/novel/suggestions/ch003.suggestion.json",
@@ -91,8 +96,12 @@ def test_show_status_command_prints_status_report(
     assert "narrative_state_machine:" in output
     assert "can_continue: True" in output
     assert "next_action: continue_from_chapter:3" in output
+    assert "commit_loop_drift_explanation:" in output
+    assert "manual_commit_note: None" in output
     assert "artifact_relation_status: partial" in output
+    assert "artifact_relation_explanation:" in output
     assert "review_path: D:/tmp/novel/reviews/ch003.review.json" in output
+    assert len(output.splitlines()) <= 40
 
 
 def test_show_status_command_supports_legacy_project_without_phase3_state(
@@ -245,6 +254,193 @@ def test_inspect_story_bible_command_supports_legacy_project_without_phase3_stat
     assert "story_bible.json" in output
 
 
+def test_prepare_review_command_prints_review_report(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "prepare_review",
+        lambda project_root, chapter_no: _review_cli_payload(chapter_no, "pending"),
+    )
+
+    exit_code = phase2_cli.main(
+        ["prepare-review", "--root", "D:/tmp/novel", "--chapter", "1"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Review prepared" in output
+    assert "status: pending" in output
+    assert "approved_suggestion_summary:" in output
+
+
+def test_list_reviews_command_prints_reviews(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "list_reviews",
+        lambda project_root: [
+            {
+                "chapter_no": 1,
+                "status": "pending",
+                "has_consistency_check": True,
+                "committed": False,
+                "review_path": "D:/tmp/novel/reviews/ch001.review.json",
+            }
+        ],
+    )
+
+    exit_code = phase2_cli.main(["list-reviews", "--root", "D:/tmp/novel"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Review list" in output
+    assert "pending" in output
+    assert "ch001.review.json" in output
+
+
+def test_show_review_command_prints_review_detail(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "load_review_for_display",
+        lambda project_root, chapter_no: _review_cli_payload(chapter_no, "approved"),
+    )
+
+    exit_code = phase2_cli.main(
+        ["show-review", "--root", "D:/tmp/novel", "--chapter", "1"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Review detail" in output
+    assert "status: approved" in output
+    assert "review_path: D:/tmp/novel/reviews/ch001.review.json" in output
+
+
+def test_approve_review_command_prints_review_report(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "approve_review",
+        lambda project_root, chapter_no: _review_cli_payload(chapter_no, "approved"),
+    )
+
+    exit_code = phase2_cli.main(
+        ["approve-review", "--root", "D:/tmp/novel", "--chapter", "1"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Review approved" in output
+    assert "status: approved" in output
+
+
+def test_reject_review_command_prints_review_report(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "reject_review",
+        lambda project_root, chapter_no, reason: {
+            **_review_cli_payload(chapter_no, "rejected"),
+            "reject_reason": reason,
+        },
+    )
+
+    exit_code = phase2_cli.main(
+        [
+            "reject-review",
+            "--root",
+            "D:/tmp/novel",
+            "--chapter",
+            "1",
+            "--reason",
+            "not ready",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Review rejected" in output
+    assert "status: rejected" in output
+    assert "reject_reason: not ready" in output
+
+
+def test_commit_approved_command_prints_commit_result(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "commit_approved_review",
+        lambda project_root, chapter_no: {
+            "chapter_no": chapter_no,
+            "suggestion_path": "D:/tmp/novel/suggestions/ch001.suggestion.json",
+            "characters_updated": 1,
+            "timeline_updated": 0,
+            "foreshadow_updated": 0,
+        },
+    )
+    monkeypatch.setattr(
+        phase2_cli,
+        "build_chapter_diagnostic_report",
+        lambda project_root, chapter_no: {
+            "review_path": "D:/tmp/novel/reviews/ch001.review.json",
+            "snapshot_path": "D:/tmp/novel/snapshots/ch001.snapshot.json",
+            "artifact_relation_status": "partial",
+        },
+    )
+
+    exit_code = phase2_cli.main(
+        ["commit-approved", "--root", "D:/tmp/novel", "--chapter", "1"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Approved review committed" in output
+    assert "characters_updated: 1" in output
+    assert "review_path: D:/tmp/novel/reviews/ch001.review.json" in output
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Review for chapter 1 was not found.", "was not found"),
+        ("Review for chapter 1 has not been approved.", "has not been approved"),
+        ("Review for chapter 1 has been rejected.", "has been rejected"),
+        ("Review for chapter 1 has already been committed.", "already been committed"),
+    ],
+)
+def test_commit_approved_command_prints_clear_gate_errors(
+    monkeypatch,
+    capsys,
+    message: str,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(
+        phase2_cli,
+        "commit_approved_review",
+        lambda project_root, chapter_no: (_ for _ in ()).throw(ValueError(message)),
+    )
+
+    exit_code = phase2_cli.main(
+        ["commit-approved", "--root", "D:/tmp/novel", "--chapter", "1"]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert expected in output
+
+
 def test_run_five_command_calls_longform_workflow(
     monkeypatch,
     capsys,
@@ -341,3 +537,32 @@ def test_workflow_error_returns_non_zero(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "loop state missing" in output
+
+
+def _review_cli_payload(chapter_no: int, status: str) -> dict[str, object]:
+    return {
+        "chapter_no": chapter_no,
+        "status": status,
+        "review_path": f"D:/tmp/novel/reviews/ch{chapter_no:03d}.review.json",
+        "suggestion_path": f"D:/tmp/novel/suggestions/ch{chapter_no:03d}.suggestion.json",
+        "approved_suggestion_summary": {
+            "chapter_no": chapter_no,
+            "character_updates": 1,
+            "timeline_updates": 0,
+            "foreshadow_updates": 0,
+            "notes": "Suggestion only.",
+        },
+        "consistency_check": {
+            "version": 1,
+            "checked_at": "2026-03-28T12:00:00Z",
+            "blockers": [],
+            "warnings": [],
+        },
+        "review_notes": [],
+        "reject_reason": "",
+        "approved_at": "2026-03-28T12:01:00Z" if status == "approved" else "",
+        "rejected_at": "2026-03-28T12:01:00Z" if status == "rejected" else "",
+        "committed_at": "2026-03-28T12:01:00Z" if status == "committed" else "",
+        "committed": status == "committed",
+        "committed_chapter_no": chapter_no if status == "committed" else None,
+    }

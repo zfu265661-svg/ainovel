@@ -61,12 +61,12 @@ def test_load_config_accepts_non_openai_compatible_base_url(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "deepseek-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com")
-    monkeypatch.setenv("MODEL_NAME", "deepseek-chat")
+    monkeypatch.setenv("MODEL_NAME", "deepseek-v4-flash")
 
     config = load_config()
 
     assert config == Config(
         openai_api_key="deepseek-key",
         openai_base_url="https://api.deepseek.com",
-        model_name="deepseek-chat",
+        model_name="deepseek-v4-flash",
     )

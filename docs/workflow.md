@@ -31,7 +31,7 @@ Before drafting, `write_chapter()` loads:
 
 ## Review And Commit Flow
 
-Formal state updates still follow:
+The legacy commit path still follows:
 
 1. load canonical suggestion
 2. create or refresh review
@@ -44,7 +44,19 @@ Formal state updates still follow:
 
 Current registered targets are characters, timeline, and foreshadow.
 
+## Manual Review Control
+
+Phase 3.2 adds a manual path:
+
+`prepare-review -> approve-review/reject-review -> commit-approved`
+
+`commit-approved` requires an approved review and uses
+`review.approved_suggestion` as the only formal commit input. Pending, rejected,
+missing, and already committed reviews are rejected before formal state is
+written.
+
+`run-five` and `commit_suggestion()` remain legacy regression paths.
+
 ## Future Extensions
 
 Future scene, style, plot, and Story Bible commits should reuse the same review/commit/snapshot pattern rather than introducing direct state writes.
-

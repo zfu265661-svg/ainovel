@@ -63,7 +63,7 @@ def test_generate_text_uses_custom_provider_base_url_and_model(
         Config(
             openai_api_key="deepseek-key",
             openai_base_url="https://api.deepseek.com",
-            model_name="deepseek-chat",
+            model_name="deepseek-v4-flash",
         )
     )
 
@@ -77,7 +77,7 @@ def test_generate_text_uses_custom_provider_base_url_and_model(
     )
     assert isinstance(openai_mock.call_args.kwargs["http_client"], httpx.Client)
     create_mock.assert_called_once_with(
-        model="deepseek-chat",
+        model="deepseek-v4-flash",
         messages=[{"role": "user", "content": "hello"}],
         stream=False,
     )
@@ -131,7 +131,7 @@ def test_generate_text_retries_connection_errors_before_succeeding(
         Config(
             openai_api_key="deepseek-key",
             openai_base_url="https://api.deepseek.com",
-            model_name="deepseek-chat",
+            model_name="deepseek-v4-flash",
         )
     )
 
@@ -164,7 +164,7 @@ def test_generate_text_includes_exception_type_and_root_cause_for_connection_err
         Config(
             openai_api_key="deepseek-key",
             openai_base_url="https://api.deepseek.com",
-            model_name="deepseek-chat",
+            model_name="deepseek-v4-flash",
         )
     )
 

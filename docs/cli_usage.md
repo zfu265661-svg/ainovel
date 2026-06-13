@@ -78,6 +78,36 @@ Inspect plot thread status and future graph-oriented fields:
 python phase2_cli.py inspect-plot-threads --root "<project_root>"
 ```
 
+Prepare a manual review from an existing suggestion:
+
+```bash
+python phase2_cli.py prepare-review --root "<project_root>" --chapter 1
+```
+
+List and inspect review artifacts:
+
+```bash
+python phase2_cli.py list-reviews --root "<project_root>"
+python phase2_cli.py show-review --root "<project_root>" --chapter 1
+```
+
+Approve or reject a prepared review:
+
+```bash
+python phase2_cli.py approve-review --root "<project_root>" --chapter 1
+python phase2_cli.py reject-review --root "<project_root>" --chapter 1 --reason "<reason>"
+```
+
+Commit only an approved review:
+
+```bash
+python phase2_cli.py commit-approved --root "<project_root>" --chapter 1
+```
+
+`commit-approved` uses `review.approved_suggestion` and keeps the existing
+snapshot, rollback, and formal-target protections. Rejected, pending, missing,
+or already committed reviews are rejected before formal state is written.
+
 Run the regression loop:
 
 ```bash

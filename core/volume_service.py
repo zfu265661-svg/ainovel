@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from core.errors import NovelAgentError, collect_missing_fields
+from core.errors import NovelAgentError, collect_missing_fields, parse_json_array
 from core.llm_client import LLMClient
 from core.prompt_loader import load_prompt
 
@@ -46,15 +46,7 @@ def generate_volume_plan(outline: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _parse_volume_plan_json(response_text: str) -> list[dict[str, Any]]:
-    try:
-        parsed = json.loads(response_text)
-    except json.JSONDecodeError as exc:
-        raise VolumeParseError(
-            f"Volume plan response is not valid JSON: {exc.msg}"
-        ) from exc
-
-    if not isinstance(parsed, list):
-        raise VolumeParseError("Volume plan response must be a JSON array.")
+    parsed = parse_json_array(response_text, VolumeParseError, "Volume plan")
 
     if not all(isinstance(item, dict) for item in parsed):
         raise VolumeParseError("Each volume plan entry must be a JSON object.")

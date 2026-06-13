@@ -9,7 +9,7 @@ from core.longform.project_state_repository import (
     get_chapter_snapshot_path,
 )
 from core.storage import load_json, load_text, save_json, save_text
-from core.workflow_service import commit_suggestion, create_project
+from core.workflow_service import commit_approved_review, commit_suggestion, create_project
 
 
 def test_commit_suggestion_updates_formal_state_files(tmp_path: Path) -> None:
@@ -112,8 +112,206 @@ def test_commit_suggestion_updates_formal_state_files(tmp_path: Path) -> None:
     assert review["consistency_check"]["warnings"] == []
     assert review["committed"] is True
     assert review["committed_chapter_no"] == 1
+    assert review["status"] == "committed"
+    assert review["committed_at"]
     assert not Path(get_chapter_snapshot_path(str(project_root), 1)).exists()
     assert load_text(str(project_root / "docs" / "ch001.plan.md")) == original_plan
+
+
+def test_commit_approved_review_uses_review_approved_suggestion_not_raw_suggestion(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "commit-approved-project"
+    create_project(
+        project_root=str(project_root),
+        title="Commit Approved Novel",
+        topic="xianxia",
+        style="cold",
+        target="serial",
+    )
+    save_json(str(project_root / "characters.json"), {"characters": []})
+    save_json(str(project_root / "timeline.json"), {"events": []})
+    save_json(str(project_root / "foreshadow.json"), {"items": []})
+    save_json(str(project_root / "locations.json"), {"locations": [{"name": "North Gate"}]})
+    suggestion_path = str(project_root / "suggestions" / "ch001.suggestion.json")
+    review_path = get_chapter_review_path(str(project_root), 1)
+    save_json(
+        suggestion_path,
+        {
+            "chapter_no": 1,
+            "character_updates": [
+                {"action": "add", "target": "Raw Suggestion", "content": "Should not commit."}
+            ],
+            "timeline_updates": [],
+            "foreshadow_updates": [],
+            "notes": "Raw suggestion should not drive commit.",
+        },
+    )
+    save_json(
+        review_path,
+        {
+            "version": 1,
+            "chapter_no": 1,
+            "created_at": "2026-03-28T12:00:00Z",
+            "suggestion_path": suggestion_path,
+            "approved_suggestion": {
+                "chapter_no": 1,
+                "character_updates": [
+                    {"action": "add", "target": "Approved Review", "content": "Should commit."}
+                ],
+                "timeline_updates": [
+                    {"action": "add", "target": "chapter_1", "content": "Approved event."}
+                ],
+                "foreshadow_updates": [],
+                "notes": "Approved review drives commit.",
+            },
+            "consistency_check": {
+                "version": 1,
+                "checked_at": "2026-03-28T12:01:00Z",
+                "blockers": [],
+                "warnings": [],
+            },
+            "status": "approved",
+            "review_notes": [],
+            "reject_reason": "",
+            "approved_at": "2026-03-28T12:02:00Z",
+            "rejected_at": "",
+            "committed_at": "",
+            "committed": False,
+            "committed_chapter_no": None,
+        },
+    )
+
+    result = commit_approved_review(str(project_root), 1)
+
+    assert result == {
+        "chapter_no": 1,
+        "suggestion_path": suggestion_path,
+        "characters_updated": 1,
+        "timeline_updated": 1,
+        "foreshadow_updated": 0,
+    }
+    assert load_json(str(project_root / "characters.json")) == {
+        "characters": [
+            {
+                "name": "Approved Review",
+                "role": "unknown",
+                "traits": [],
+                "current_state": "Should commit.",
+            }
+        ]
+    }
+    assert load_json(str(project_root / "timeline.json")) == {
+        "events": [
+            {
+                "chapter_no": 1,
+                "event": "Approved event.",
+                "action": "add",
+                "target": "chapter_1",
+            }
+        ]
+    }
+    assert load_json(str(project_root / "locations.json")) == {
+        "locations": [{"name": "North Gate"}]
+    }
+    review = load_json(review_path)
+    suggestion = load_json(suggestion_path)
+    assert review["status"] == "committed"
+    assert review["committed"] is True
+    assert review["committed_at"]
+    assert suggestion["committed"] is True
+    assert suggestion["committed_chapter_no"] == 1
+
+
+def test_commit_approved_review_restores_snapshot_and_approved_status_when_state_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "commit-approved-project"
+    create_project(
+        project_root=str(project_root),
+        title="Commit Approved Novel",
+        topic="xianxia",
+        style="cold",
+        target="serial",
+    )
+    original_characters = {"characters": []}
+    original_timeline = {"events": []}
+    original_foreshadow = {"items": []}
+    save_json(str(project_root / "characters.json"), original_characters)
+    save_json(str(project_root / "timeline.json"), original_timeline)
+    save_json(str(project_root / "foreshadow.json"), original_foreshadow)
+    suggestion_path = str(project_root / "suggestions" / "ch001.suggestion.json")
+    review_path = get_chapter_review_path(str(project_root), 1)
+    save_json(
+        suggestion_path,
+        {
+            "chapter_no": 1,
+            "character_updates": [],
+            "timeline_updates": [],
+            "foreshadow_updates": [],
+            "notes": "Marker only.",
+        },
+    )
+    save_json(
+        review_path,
+        {
+            "version": 1,
+            "chapter_no": 1,
+            "created_at": "2026-03-28T12:00:00Z",
+            "suggestion_path": suggestion_path,
+            "approved_suggestion": {
+                "chapter_no": 1,
+                "character_updates": [
+                    {"action": "add", "target": "Approved Review", "content": "Should restore."}
+                ],
+                "timeline_updates": [
+                    {"action": "add", "target": "chapter_1", "content": "Approved event."}
+                ],
+                "foreshadow_updates": [],
+                "notes": "Approved review drives commit.",
+            },
+            "consistency_check": {
+                "version": 1,
+                "checked_at": "2026-03-28T12:01:00Z",
+                "blockers": [],
+                "warnings": [],
+            },
+            "status": "approved",
+            "review_notes": [],
+            "reject_reason": "",
+            "approved_at": "2026-03-28T12:02:00Z",
+            "rejected_at": "",
+            "committed_at": "",
+            "committed": False,
+            "committed_chapter_no": None,
+        },
+    )
+    original_save_json = save_json
+
+    def failing_save_json(path: str, data) -> None:
+        if path == str(project_root / "timeline.json"):
+            raise RuntimeError("timeline write failed")
+        original_save_json(path, data)
+
+    monkeypatch.setattr("core.workflow_service.save_json", failing_save_json)
+
+    with pytest.raises(Exception, match="timeline state persistence: timeline write failed"):
+        commit_approved_review(str(project_root), 1)
+
+    review = load_json(review_path)
+    suggestion = load_json(suggestion_path)
+    snapshot = load_json(get_chapter_snapshot_path(str(project_root), 1))
+    assert load_json(str(project_root / "characters.json")) == original_characters
+    assert load_json(str(project_root / "timeline.json")) == original_timeline
+    assert load_json(str(project_root / "foreshadow.json")) == original_foreshadow
+    assert review["status"] == "approved"
+    assert review["committed"] is False
+    assert review["committed_chapter_no"] is None
+    assert review["committed_at"] == ""
+    assert "committed" not in suggestion
+    assert "committed_chapter_no" not in suggestion
+    assert snapshot["status"] == "restored"
 
 
 def test_commit_suggestion_raises_when_suggestion_file_missing(tmp_path: Path) -> None:

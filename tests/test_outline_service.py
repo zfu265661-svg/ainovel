@@ -95,6 +95,35 @@ def test_generate_outline_raises_for_invalid_json(
         generate_outline("修仙", "热血", "长篇连载")
 
 
+def test_generate_outline_repairs_control_chars_via_shared_json_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("core.outline_service.load_prompt", lambda name: "{topic}")
+
+    class FakeLLMClient:
+        def generate_text_with_context(
+            self,
+            prompt: str,
+            stage_name: str | None = None,
+            volume_no: int | None = None,
+        ) -> str:
+            return """{
+  "title": "Broken
+Title",
+  "core_hook": "Hook",
+  "theme": "Theme",
+  "protagonist": {"name": "Archivist"},
+  "conflict": {"main_conflict": "Memory edits"},
+  "volume_plan": []
+}"""
+
+    monkeypatch.setattr("core.outline_service.LLMClient", FakeLLMClient)
+
+    result = generate_outline("topic", "style", "target")
+
+    assert result["title"] == "BrokenTitle"
+
+
 def test_generate_outline_raises_for_missing_required_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

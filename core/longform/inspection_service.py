@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.longform.chapter_context_service import build_chapter_context
+from core.longform.enhanced_state_registry import get_enhanced_state_targets
 from core.project_service import (
     get_chapter_plan_path,
     get_chapter_summary_path,
@@ -23,14 +24,6 @@ from core.workflow_service import (
 )
 
 
-_ENHANCED_STATE_FILES: tuple[tuple[str, str, str | None], ...] = (
-    ("story_bible", "story_bible_json", None),
-    ("plot_threads", "plot_threads_json", "threads"),
-    ("locations", "locations_json", "locations"),
-    ("organizations", "organizations_json", "organizations"),
-    ("style_guide", "style_guide_json", None),
-    ("scenes", "scenes_json", "scenes"),
-)
 _THREAD_STATUS_GROUPS: dict[str, str] = {
     "active": "active",
     "current": "active",
@@ -95,41 +88,41 @@ def build_story_bible_inspection_report(project_root: str) -> dict[str, Any]:
     files: dict[str, dict[str, Any]] = {}
     counts: dict[str, int] = {}
 
-    for state_name, path_key, item_key in _ENHANCED_STATE_FILES:
-        path = Path(paths[path_key])
+    for target in get_enhanced_state_targets():
+        path = Path(paths[target.path_key])
         if not path.is_file():
             missing_files.append(path.name)
-            files[state_name] = {
+            files[target.name] = {
                 "path": str(path),
                 "exists": False,
                 "health": "missing_optional",
                 "count": 0,
             }
-            counts[state_name] = 0
+            counts[target.name] = 0
             continue
 
         state = _safe_load_state_object(path)
         if state["error"] is not None:
             corrupt_files.append(path.name)
             corrupt_file_errors[path.name] = cast(str, state["error"])
-            files[state_name] = {
+            files[target.name] = {
                 "path": str(path),
                 "exists": True,
                 "health": "corrupt",
                 "count": 0,
             }
-            counts[state_name] = 0
+            counts[target.name] = 0
             continue
 
         data = cast(dict[str, Any], state["data"])
-        count = _state_count(data, item_key)
-        files[state_name] = {
+        count = _state_count(data, target.item_key)
+        files[target.name] = {
             "path": str(path),
             "exists": True,
             "health": "healthy",
             "count": count,
         }
-        counts[state_name] = count
+        counts[target.name] = count
 
     if corrupt_files:
         health = "corrupt"
@@ -236,8 +229,8 @@ def _context_sources(project_root: str, chapter_no: int) -> dict[str, Any]:
             "foreshadow": paths["foreshadow_json"],
         },
         "enhanced_state_files": {
-            state_name: paths[path_key]
-            for state_name, path_key, _item_key in _ENHANCED_STATE_FILES
+            target.name: paths[target.path_key]
+            for target in get_enhanced_state_targets()
         },
     }
 

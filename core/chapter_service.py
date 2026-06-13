@@ -4,7 +4,12 @@ import json
 import sys
 from typing import Any
 
-from core.errors import ChapterPlanError, collect_missing_fields, parse_json_object
+from core.errors import (
+    ChapterPlanError,
+    collect_missing_fields,
+    parse_json_array,
+    parse_json_object,
+)
 from core.llm_client import LLMClient
 from core.prompt_loader import load_prompt
 
@@ -117,11 +122,13 @@ def _parse_volume_chapter_plans_json(
     response_text: str,
     expected_count: int,
 ) -> list[dict[str, Any]]:
-    candidate = _extract_first_json_array_text(response_text)
-
     try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError as exc:
+        parsed = parse_json_array(
+            response_text,
+            ChapterParseError,
+            "Volume chapter plan",
+        )
+    except ChapterParseError as exc:
         snippet = _build_response_snippet(response_text)
         print(
             "[LLM] stage=volume chapter planning status=parse_failure "
@@ -129,12 +136,8 @@ def _parse_volume_chapter_plans_json(
             file=sys.stderr,
         )
         raise ChapterParseError(
-            "Volume chapter plan response is not valid JSON: "
-            f"{exc.msg} | response_snippet={snippet}"
+            f"{exc} | response_snippet={snippet}"
         ) from exc
-
-    if not isinstance(parsed, list):
-        raise ChapterParseError("Volume chapter plan response must be a JSON array.")
 
     if not all(isinstance(item, dict) for item in parsed):
         raise ChapterParseError("Each volume chapter plan entry must be a JSON object.")
@@ -146,25 +149,6 @@ def _parse_volume_chapter_plans_json(
         )
 
     return parsed
-
-
-def _extract_first_json_array_text(response_text: str) -> str:
-    decoder = json.JSONDecoder()
-    normalized = response_text.strip()
-
-    for start_index, char in enumerate(normalized):
-        if char != "[":
-            continue
-
-        try:
-            parsed, end_index = decoder.raw_decode(normalized[start_index:])
-        except json.JSONDecodeError:
-            continue
-
-        if isinstance(parsed, list):
-            return normalized[start_index : start_index + end_index]
-
-    return normalized
 
 
 def _build_response_snippet(response_text: str, max_chars: int = 200) -> str:

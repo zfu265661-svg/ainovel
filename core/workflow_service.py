@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
@@ -11,12 +12,17 @@ from core.character_service import load_characters
 from core.chapter_service import generate_chapter_plan
 from core.chapter_service import generate_volume_chapters
 from core.draft_service import generate_draft
-from core.errors import NovelAgentError
+from core.errors import NovelAgentError, parse_json_object
 from core.foreshadow_service import load_foreshadows
 from core.longform.chapter_context_service import build_chapter_context
 from core.longform.consistency_service import run_review_consistency_check
 from core.longform.project_state_repository import get_chapter_review_path
-from core.longform.review_service import create_or_refresh_review, load_review_for_commit
+from core.longform.review_service import (
+    STATUS_COMMITTED,
+    assert_review_can_commit,
+    create_or_refresh_review,
+    load_review_for_commit,
+)
 from core.longform.snapshot_service import (
     cleanup_snapshot_after_commit,
     create_pending_snapshot,
@@ -210,7 +216,6 @@ def write_chapter(project_root: str, chapter_no: int) -> dict[str, Any]:
 
 def commit_suggestion(project_root: str, chapter_no: int) -> dict[str, Any]:
     """Commit one chapter suggestion file into the formal state JSON files."""
-    paths = get_project_file_paths(project_root)
     suggestion_path = get_chapter_suggestion_path(project_root, chapter_no)
     preflight_result = _run_stage(
         "preflight snapshot handling",
@@ -240,6 +245,53 @@ def commit_suggestion(project_root: str, chapter_no: int) -> dict[str, Any]:
         "review load",
         lambda: load_review_for_commit(project_root, chapter_no),
     )
+
+    return _commit_loaded_review(
+        project_root=project_root,
+        chapter_no=chapter_no,
+        suggestion_path=suggestion_path,
+        review=review,
+    )
+
+
+def commit_approved_review(project_root: str, chapter_no: int) -> dict[str, Any]:
+    """Commit a manually approved review through the canonical commit protection."""
+    _run_stage(
+        "approved review gate",
+        lambda: assert_review_can_commit(project_root, chapter_no),
+    )
+    _run_stage(
+        "preflight snapshot handling",
+        lambda: _handle_manual_commit_preflight(project_root, chapter_no),
+    )
+    _run_stage(
+        "review consistency check",
+        lambda: run_review_consistency_check(project_root, chapter_no),
+    )
+    _run_stage(
+        "approved review gate",
+        lambda: assert_review_can_commit(project_root, chapter_no),
+    )
+    review = _run_stage(
+        "review load",
+        lambda: load_review_for_commit(project_root, chapter_no),
+    )
+
+    return _commit_loaded_review(
+        project_root=project_root,
+        chapter_no=chapter_no,
+        suggestion_path=get_chapter_suggestion_path(project_root, chapter_no),
+        review=review,
+    )
+
+
+def _commit_loaded_review(
+    project_root: str,
+    chapter_no: int,
+    suggestion_path: str,
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    paths = get_project_file_paths(project_root)
     approved_suggestion = cast(dict[str, Any], review["approved_suggestion"])
     prepared_commit = _prepare_preloaded_suggestion_commit(
         paths=paths,
@@ -292,6 +344,12 @@ def commit_suggestion(project_root: str, chapter_no: int) -> dict[str, Any]:
     return cast(dict[str, Any], prepared_commit["result"])
 
 
+def _handle_manual_commit_preflight(project_root: str, chapter_no: int) -> None:
+    preflight_result = handle_preflight_snapshot(project_root, chapter_no)
+    if isinstance(preflight_result, dict) and preflight_result.get("status") == "already_committed":
+        raise ValueError(f"Review for chapter {chapter_no} has already been committed.")
+
+
 def _prepare_preloaded_suggestion_commit(
     paths: dict[str, str],
     suggestion: dict[str, Any],
@@ -342,8 +400,10 @@ def _persist_commit_markers(
 
     committed_review = {
         **original_review,
+        "status": STATUS_COMMITTED,
         "committed": True,
         "committed_chapter_no": chapter_no,
+        "committed_at": _utc_now_iso(),
     }
     committed_suggestion = {
         **suggestion,
@@ -670,12 +730,9 @@ def _load_json_markdown_document(path: str, document_name: str) -> dict[str, Any
     content = load_text(path)
     json_block = _extract_json_code_block(content)
     try:
-        parsed = json.loads(json_block)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{document_name} document is not valid JSON: {exc.msg}") from exc
-
-    if not isinstance(parsed, dict):
-        raise ValueError(f"{document_name} document must contain a JSON object.")
+        parsed = parse_json_object(json_block, ValueError, document_name)
+    except ValueError as exc:
+        raise ValueError(f"{document_name} document is not valid JSON: {exc}") from exc
 
     return parsed
 
@@ -976,6 +1033,10 @@ def _find_item_by_key(
         if item.get(key) == value:
             return item
     return None
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _load_optional_module(module_name: str) -> ModuleType | None:

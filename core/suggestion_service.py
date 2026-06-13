@@ -89,11 +89,9 @@ def _build_prompt(
 
 
 def _parse_result_json(response_text: str) -> dict[str, Any]:
-    candidate = _extract_first_json_object_text(response_text)
-
     try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError as exc:
+        parsed = parse_json_object(response_text, SuggestionParseError, "State suggestion")
+    except SuggestionParseError as exc:
         snippet = _build_response_snippet(response_text)
         print(
             "[LLM] stage=state suggestion generation status=parse_failure "
@@ -101,12 +99,8 @@ def _parse_result_json(response_text: str) -> dict[str, Any]:
             file=sys.stderr,
         )
         raise SuggestionParseError(
-            "State suggestion response is not valid JSON: "
-            f"{exc.msg} | response_snippet={snippet}"
+            f"{exc} | response_snippet={snippet}"
         ) from exc
-
-    if not isinstance(parsed, dict):
-        raise SuggestionParseError("State suggestion response must be a JSON object.")
 
     return parsed
 
@@ -289,25 +283,6 @@ def _normalize_foreshadow_updates(updates: Any) -> Any:
             continue
 
         normalized.append(item)
-
-    return normalized
-
-
-def _extract_first_json_object_text(response_text: str) -> str:
-    decoder = json.JSONDecoder()
-    normalized = response_text.strip()
-
-    for start_index, char in enumerate(normalized):
-        if char != "{":
-            continue
-
-        try:
-            parsed, end_index = decoder.raw_decode(normalized[start_index:])
-        except json.JSONDecodeError:
-            continue
-
-        if isinstance(parsed, dict):
-            return normalized[start_index : start_index + end_index]
 
     return normalized
 

@@ -133,6 +133,35 @@ def test_build_project_status_report_falls_back_to_loop_state_when_commit_scan_i
     assert report["last_successfully_committed_source"] == "loop_state_fallback"
     assert report["commit_scan_status"] == "unknown"
     assert report["commit_loop_drift"] is True
+    assert "scan is unknown" in report["commit_loop_drift_explanation"]
+
+
+def test_build_project_status_report_explains_expected_manual_commit_drift(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "manual-status-project"
+    create_project_structure(
+        str(project_root),
+        title="Manual Status Novel",
+        topic="xianxia",
+        style="cold",
+        target="serial",
+    )
+    initialize_loop_state(str(project_root), target_chapter_count=5)
+    _save_committed_pair(str(project_root), 1)
+
+    report = build_project_status_report(str(project_root))
+
+    assert report["last_successfully_committed_chapter_no"] == 1
+    assert report["last_successfully_committed_source"] == "artifact_scan"
+    assert report["loop_state_last_completed_chapter_no"] == 0
+    assert report["commit_loop_drift"] is True
+    assert "manual commit-approved" in report["commit_loop_drift_explanation"]
+    assert "does not advance loop_state" in report["manual_commit_note"]
+    assert report["artifact_relation_status"] == "partial"
+    assert "informational" in report["artifact_relation_explanation"]
+    assert report["can_continue"] is True
+    assert report["next_action"] == "continue_from_chapter:1"
 
 
 def test_build_project_status_report_reports_missing_optional_agent_state(

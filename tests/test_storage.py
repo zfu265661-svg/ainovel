@@ -16,6 +16,13 @@ def test_save_and_load_json(tmp_path: Path) -> None:
     assert load_json(str(file_path)) == expected
 
 
+def test_load_json_accepts_utf8_bom(tmp_path: Path) -> None:
+    file_path = tmp_path / "data.json"
+    file_path.write_text('\ufeff{"title": "novel"}', encoding="utf-8")
+
+    assert load_json(str(file_path)) == {"title": "novel"}
+
+
 def test_save_and_load_text(tmp_path: Path) -> None:
     file_path = tmp_path / "nested" / "notes.txt"
     expected = "章节摘要"

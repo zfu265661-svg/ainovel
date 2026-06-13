@@ -170,12 +170,15 @@ def _restore_commit_markers(project_root: str, chapter_no: int) -> list[str]:
             review = load_json(review_path)
             if not isinstance(review, dict):
                 raise ValueError("Review file must contain a JSON object.")
+            restored_status = "approved" if _non_empty_string(review.get("approved_at")) else "pending"
             save_json(
                 review_path,
                 {
                     **review,
+                    "status": restored_status,
                     "committed": False,
                     "committed_chapter_no": None,
+                    "committed_at": "",
                 },
             )
         except Exception as exc:
@@ -240,6 +243,10 @@ def _load_optional_artifact(path: str) -> dict[str, Any] | None:
 
 def _artifact_is_committed(data: dict[str, Any] | None) -> bool:
     return isinstance(data, dict) and data.get("committed") is True
+
+
+def _non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _resolve_committed_suggestion_payload(

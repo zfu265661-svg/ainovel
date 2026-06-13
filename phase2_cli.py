@@ -9,7 +9,18 @@ from core.longform.inspection_service import (
     build_plot_threads_inspection_report,
     build_story_bible_inspection_report,
 )
-from core.longform.status_service import build_project_status_report
+from core.longform.review_service import (
+    approve_review,
+    list_reviews,
+    load_review_for_display,
+    prepare_review,
+    reject_review,
+)
+from core.longform.status_service import (
+    build_chapter_diagnostic_report,
+    build_project_status_report,
+)
+from core.workflow_service import commit_approved_review
 
 
 TEXT_RUN_FAILED = "运行失败"
@@ -66,6 +77,77 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect_plot_threads_parser.add_argument("--root", required=True, help="Project root path.")
 
+    prepare_review_parser = subparsers.add_parser(
+        "prepare-review",
+        help="Create or refresh a pending review and run deterministic checks.",
+    )
+    prepare_review_parser.add_argument("--root", required=True, help="Project root path.")
+    prepare_review_parser.add_argument(
+        "--chapter",
+        required=True,
+        type=int,
+        help="Chapter number to prepare.",
+    )
+
+    list_reviews_parser = subparsers.add_parser(
+        "list-reviews",
+        help="List review artifacts without writing.",
+    )
+    list_reviews_parser.add_argument("--root", required=True, help="Project root path.")
+
+    show_review_parser = subparsers.add_parser(
+        "show-review",
+        help="Show one review artifact without writing.",
+    )
+    show_review_parser.add_argument("--root", required=True, help="Project root path.")
+    show_review_parser.add_argument(
+        "--chapter",
+        required=True,
+        type=int,
+        help="Chapter number to show.",
+    )
+
+    approve_review_parser = subparsers.add_parser(
+        "approve-review",
+        help="Approve a pending review without committing formal state.",
+    )
+    approve_review_parser.add_argument("--root", required=True, help="Project root path.")
+    approve_review_parser.add_argument(
+        "--chapter",
+        required=True,
+        type=int,
+        help="Chapter number to approve.",
+    )
+
+    reject_review_parser = subparsers.add_parser(
+        "reject-review",
+        help="Reject a pending review without committing formal state.",
+    )
+    reject_review_parser.add_argument("--root", required=True, help="Project root path.")
+    reject_review_parser.add_argument(
+        "--chapter",
+        required=True,
+        type=int,
+        help="Chapter number to reject.",
+    )
+    reject_review_parser.add_argument(
+        "--reason",
+        required=True,
+        help="Human-readable rejection reason.",
+    )
+
+    commit_approved_parser = subparsers.add_parser(
+        "commit-approved",
+        help="Commit one manually approved review into formal state.",
+    )
+    commit_approved_parser.add_argument("--root", required=True, help="Project root path.")
+    commit_approved_parser.add_argument(
+        "--chapter",
+        required=True,
+        type=int,
+        help="Chapter number to commit.",
+    )
+
     return parser
 
 
@@ -106,6 +188,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_inspect_plot_threads_result(args.root, result)
             return 0
 
+        if args.command == "prepare-review":
+            result = prepare_review(args.root, args.chapter)
+            _print_review_result("Review prepared", args.root, result)
+            return 0
+
+        if args.command == "list-reviews":
+            result = {"reviews": list_reviews(args.root)}
+            _print_list_reviews_result(args.root, result)
+            return 0
+
+        if args.command == "show-review":
+            result = load_review_for_display(args.root, args.chapter)
+            _print_review_result("Review detail", args.root, result)
+            return 0
+
+        if args.command == "approve-review":
+            result = approve_review(args.root, args.chapter)
+            _print_review_result("Review approved", args.root, result)
+            return 0
+
+        if args.command == "reject-review":
+            result = reject_review(args.root, args.chapter, args.reason)
+            _print_review_result("Review rejected", args.root, result)
+            return 0
+
+        if args.command == "commit-approved":
+            result = commit_approved_review(args.root, args.chapter)
+            diagnostics = build_chapter_diagnostic_report(args.root, args.chapter)
+            _print_commit_approved_result(args.root, result, diagnostics)
+            return 0
+
         if args.command == "run-five":
             result = run_five_chapter_loop(args.root)
             _print_run_five_result(args.root, result)
@@ -140,6 +253,8 @@ def _print_show_status_result(project_root: str, result: dict[str, object]) -> N
         "last_successfully_committed_source",
         "commit_scan_status",
         "commit_loop_drift",
+        "commit_loop_drift_explanation",
+        "manual_commit_note",
         "last_attempted_chapter_no",
         "last_attempt_status",
         "last_failure_stage",
@@ -158,6 +273,7 @@ def _print_show_status_result(project_root: str, result: dict[str, object]) -> N
         "stale_snapshot_chapters",
         "artifact_focus_chapter_no",
         "artifact_relation_status",
+        "artifact_relation_explanation",
         "checkpoint_path",
         "review_path",
         "suggestion_path",
@@ -211,6 +327,50 @@ def _print_inspect_plot_threads_result(project_root: str, result: dict[str, obje
         "graph",
     ):
         print(f"{key}: {_render_value(result.get(key))}")
+
+
+def _print_list_reviews_result(project_root: str, result: dict[str, object]) -> None:
+    print("Review list")
+    print(f"project_root: {project_root}")
+    print(f"reviews: {_render_value(result.get('reviews'))}")
+
+
+def _print_review_result(title: str, project_root: str, result: dict[str, object]) -> None:
+    print(title)
+    print(f"project_root: {project_root}")
+    for key in (
+        "chapter_no",
+        "status",
+        "review_path",
+        "suggestion_path",
+        "approved_suggestion_summary",
+        "consistency_check",
+        "review_notes",
+        "reject_reason",
+        "approved_at",
+        "rejected_at",
+        "committed_at",
+        "committed",
+        "committed_chapter_no",
+    ):
+        print(f"{key}: {_render_value(result.get(key))}")
+
+
+def _print_commit_approved_result(
+    project_root: str,
+    result: dict[str, object],
+    diagnostics: dict[str, object],
+) -> None:
+    print("Approved review committed")
+    print(f"project_root: {project_root}")
+    print(f"chapter_no: {result.get('chapter_no')}")
+    print(f"suggestion_path: {result.get('suggestion_path')}")
+    print(f"characters_updated: {result.get('characters_updated')}")
+    print(f"timeline_updated: {result.get('timeline_updated')}")
+    print(f"foreshadow_updated: {result.get('foreshadow_updated')}")
+    print(f"review_path: {diagnostics.get('review_path')}")
+    print(f"snapshot_path: {diagnostics.get('snapshot_path')}")
+    print(f"artifact_relation_status: {diagnostics.get('artifact_relation_status')}")
 
 
 def _print_run_five_result(project_root: str, result: dict[str, object]) -> None:

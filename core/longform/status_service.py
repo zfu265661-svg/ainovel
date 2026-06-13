@@ -11,6 +11,7 @@ from core.longform.project_state_repository import (
     get_longform_file_paths,
     load_project_loop_state,
 )
+from core.longform.enhanced_state_registry import get_enhanced_state_targets
 from core.longform.state_targets import get_formal_state_targets
 from core.project_service import get_chapter_suggestion_path, get_project_file_paths
 from core.storage import load_json
@@ -54,16 +55,6 @@ _REQUIRED_FORMAL_STATE_FILE_KEYS: tuple[str, ...] = (
     "timeline_json",
     "foreshadow_json",
 )
-_ENHANCED_STATE_FILES: tuple[tuple[str, str, str | None], ...] = (
-    ("story_bible", "story_bible_json", None),
-    ("plot_threads", "plot_threads_json", "threads"),
-    ("locations", "locations_json", "locations"),
-    ("organizations", "organizations_json", "organizations"),
-    ("style_guide", "style_guide_json", None),
-    ("scenes", "scenes_json", "scenes"),
-)
-
-
 def build_project_status_report(project_root: str) -> dict[str, Any]:
     loop_state = load_project_loop_state(project_root)
     formal_state_health = _scan_formal_state_health(project_root)
@@ -84,6 +75,19 @@ def build_project_status_report(project_root: str) -> dict[str, Any]:
         last_successfully_committed_source = "loop_state_fallback"
         commit_scan_status = "unknown"
         commit_loop_drift = True
+    commit_loop_drift_explanation = _explain_commit_loop_drift(
+        commit_loop_drift=commit_loop_drift,
+        loop_state_last_completed=loop_state_last_completed,
+        last_successfully_committed_chapter_no=last_successfully_committed_chapter_no,
+        last_successfully_committed_source=last_successfully_committed_source,
+        commit_scan_status=commit_scan_status,
+    )
+    manual_commit_note = _build_manual_commit_note(
+        commit_loop_drift=commit_loop_drift,
+        loop_state_last_completed=loop_state_last_completed,
+        last_successfully_committed_chapter_no=last_successfully_committed_chapter_no,
+        last_successfully_committed_source=last_successfully_committed_source,
+    )
 
     checkpoint_payload = latest_checkpoint["data"]
     last_attempted_chapter_no = latest_checkpoint["chapter_no"]
@@ -147,6 +151,8 @@ def build_project_status_report(project_root: str) -> dict[str, Any]:
         "last_successfully_committed_source": last_successfully_committed_source,
         "commit_scan_status": commit_scan_status,
         "commit_loop_drift": commit_loop_drift,
+        "commit_loop_drift_explanation": commit_loop_drift_explanation,
+        "manual_commit_note": manual_commit_note,
         "last_attempted_chapter_no": last_attempted_chapter_no,
         "last_attempt_status": last_attempt_status,
         "last_failure_stage": last_failure_stage,
@@ -168,11 +174,87 @@ def build_project_status_report(project_root: str) -> dict[str, Any]:
         "stale_snapshot_chapters": stale_snapshots,
         "artifact_focus_chapter_no": artifact_focus_chapter_no,
         "artifact_relation_status": chapter_diagnostics["artifact_relation_status"],
+        "artifact_relation_explanation": _explain_artifact_relation_status(
+            artifact_relation_status=chapter_diagnostics["artifact_relation_status"],
+            manual_commit_note=manual_commit_note,
+        ),
         "checkpoint_path": chapter_diagnostics["checkpoint_path"],
         "review_path": chapter_diagnostics["review_path"],
         "suggestion_path": chapter_diagnostics["suggestion_path"],
         "snapshot_path": chapter_diagnostics["snapshot_path"],
     }
+
+
+def _explain_commit_loop_drift(
+    *,
+    commit_loop_drift: bool,
+    loop_state_last_completed: int,
+    last_successfully_committed_chapter_no: int,
+    last_successfully_committed_source: str,
+    commit_scan_status: str,
+) -> str:
+    if not commit_loop_drift:
+        return "loop_state and committed artifact markers agree."
+
+    if commit_scan_status == "unknown":
+        return (
+            "Committed artifact scan is unknown; status is using loop_state fallback "
+            "until review/suggestion markers can be read."
+        )
+
+    if (
+        last_successfully_committed_source == "artifact_scan"
+        and last_successfully_committed_chapter_no > loop_state_last_completed
+    ):
+        return (
+            "Committed artifacts are ahead of loop_state. This is expected after "
+            "manual commit-approved; serial run-five advances loop_state separately."
+        )
+
+    return (
+        "Committed artifact markers and loop_state disagree; inspect review and "
+        "suggestion markers before continuing."
+    )
+
+
+def _build_manual_commit_note(
+    *,
+    commit_loop_drift: bool,
+    loop_state_last_completed: int,
+    last_successfully_committed_chapter_no: int,
+    last_successfully_committed_source: str,
+) -> str | None:
+    if (
+        commit_loop_drift
+        and last_successfully_committed_source == "artifact_scan"
+        and last_successfully_committed_chapter_no > loop_state_last_completed
+    ):
+        return (
+            "manual commit-approved updates formal state and review artifacts but "
+            "does not advance loop_state."
+        )
+    return None
+
+
+def _explain_artifact_relation_status(
+    *,
+    artifact_relation_status: Any,
+    manual_commit_note: str | None,
+) -> str:
+    if artifact_relation_status == "partial" and manual_commit_note:
+        return (
+            "partial can be informational for manual review commits when checkpoint "
+            "artifacts are absent and snapshot health is clean."
+        )
+    if artifact_relation_status == "partial":
+        return "some chapter artifacts are absent; inspect paths before assuming alignment."
+    if artifact_relation_status == "aligned":
+        return "chapter process artifacts are aligned."
+    if artifact_relation_status == "mismatched":
+        return "chapter artifacts disagree; inspect review/suggestion/snapshot paths."
+    if artifact_relation_status == "unknown":
+        return "one or more chapter artifacts cannot be read."
+    return "chapter artifact relation status is not recognized."
 
 
 def _build_narrative_state_machine_overview(
@@ -185,9 +267,9 @@ def _build_narrative_state_machine_overview(
     corrupt_files = set(formal_state_health["corrupt_files"])
 
     enhanced_counts: dict[str, int] = {}
-    for state_name, path_key, item_key in _ENHANCED_STATE_FILES:
-        path = project_paths[path_key]
-        enhanced_counts[state_name] = _count_state_items(path, item_key)
+    for target in get_enhanced_state_targets():
+        path = project_paths[target.path_key]
+        enhanced_counts[target.name] = _count_state_items(path, target.item_key)
 
     checkpoints_dir = Path(longform_paths["checkpoints_dir"])
     reviews_dir = Path(longform_paths["reviews_dir"])
@@ -202,14 +284,14 @@ def _build_narrative_state_machine_overview(
         },
         "enhanced_state": {
             "missing_optional": [
-                Path(project_paths[path_key]).name
-                for _state_name, path_key, _item_key in _ENHANCED_STATE_FILES
-                if Path(project_paths[path_key]).name in missing_files
+                Path(project_paths[target.path_key]).name
+                for target in get_enhanced_state_targets()
+                if Path(project_paths[target.path_key]).name in missing_files
             ],
             "corrupt_optional": [
-                Path(project_paths[path_key]).name
-                for _state_name, path_key, _item_key in _ENHANCED_STATE_FILES
-                if Path(project_paths[path_key]).name in corrupt_files
+                Path(project_paths[target.path_key]).name
+                for target in get_enhanced_state_targets()
+                if Path(project_paths[target.path_key]).name in corrupt_files
             ],
             "counts": enhanced_counts,
         },
